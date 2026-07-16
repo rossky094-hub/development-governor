@@ -2,6 +2,16 @@
 
 All notable public changes are documented here.
 
+## 0.1.0b2 - 2026-07-16
+
+Targeted verification repair.
+
+- Return a non-zero CLI exit status when frozen verification reports
+  `verification_failed`.
+- Make the timeout/no-retry regression rely on controller receipt evidence instead
+  of a timing-sensitive child-process marker.
+- Preserve beta.1 as an immutable prerelease with its original failure receipt.
+
 ## 0.1.0b1 - 2026-07-16
 
 First public beta of Development Governor.

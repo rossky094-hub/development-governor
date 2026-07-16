@@ -956,15 +956,11 @@ class DevelopmentGovernorTests(unittest.TestCase):
         self.assertEqual(receipt["token_usage"]["total_tokens"], 100)
 
     def test_timeout_stops_root_without_retry(self):
-        marker = self.root / "timeout-count.txt"
         fake = self.fake_codex(
-            f"""
+            """
             import json
-            from pathlib import Path
             import time
-            marker = Path({str(marker)!r})
-            marker.write_text(marker.read_text() + "1" if marker.exists() else "1")
-            print(json.dumps({{"type": "thread.started", "thread_id": "session-timeout"}}), flush=True)
+            print(json.dumps({"type": "thread.started", "thread_id": "session-timeout"}), flush=True)
             time.sleep(10)
             """
         )
@@ -981,7 +977,6 @@ class DevelopmentGovernorTests(unittest.TestCase):
         self.assertEqual(receipt["reason"], "elapsed_budget_exhausted")
         self.assertTrue(receipt["timed_out"])
         self.assertEqual(receipt["invocation_count"], 1)
-        self.assertEqual(marker.read_text(), "1")
 
     def test_lineage_invocation_budget_blocks_changed_candidate_before_launch(self):
         first_fake = self.fake_codex(

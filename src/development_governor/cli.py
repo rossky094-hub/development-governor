@@ -311,6 +311,8 @@ def main(argv=None) -> int:
         return 2
 
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    if args.command == "verify" and payload.get("status") != "verification_passed":
+        return 1
     return 0
 
 

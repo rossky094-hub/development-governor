@@ -17,7 +17,7 @@ class PublicReleaseTests(unittest.TestCase):
         metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
         self.assertIn('name = "development-governor"', metadata)
-        self.assertIn('version = "0.1.0b1"', metadata)
+        self.assertIn('version = "0.1.0b2"', metadata)
         self.assertIn('dependencies = []', metadata)
         self.assertIn('development-governor = "development_governor.cli:main"', metadata)
         self.assertIn('governor = "development_governor.cli:main"', metadata)

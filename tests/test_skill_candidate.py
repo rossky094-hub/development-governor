@@ -2,6 +2,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -187,6 +188,7 @@ class SkillCandidateTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "promoted")
+        self.assertEqual(result["install_mode"], "replace")
         self.assertEqual(
             (self.installed / "SKILL.md").read_text(encoding="utf-8"),
             "candidate\n",
@@ -245,6 +247,34 @@ class SkillCandidateTests(unittest.TestCase):
             "candidate\n",
         )
 
+    def test_new_skill_install_requires_explicit_flag(self):
+        stage_skill_candidate(self.installed, self.acceptance, self.candidate)
+        (self.candidate / "skill" / "SKILL.md").write_text(
+            "candidate\n", encoding="utf-8"
+        )
+        self._write_terminal_receipt()
+        shutil.rmtree(self.installed)
+
+        with self.assertRaisesRegex(SkillCandidateError, "allow_new_install"):
+            promote_skill_candidate(
+                self.candidate, self.installed, self.terminal_receipt
+            )
+
+        result = promote_skill_candidate(
+            self.candidate,
+            self.installed,
+            self.terminal_receipt,
+            allow_new_install=True,
+        )
+
+        self.assertEqual(result["status"], "promoted")
+        self.assertEqual(result["install_mode"], "new")
+        self.assertIsNone(result["previous_installed_tree_hash"])
+        self.assertEqual(
+            (self.installed / "SKILL.md").read_text(encoding="utf-8"),
+            "candidate\n",
+        )
+
     def test_promotion_rejects_stale_or_candidate_local_receipt(self):
         stage_skill_candidate(self.installed, self.acceptance, self.candidate)
         self._write_terminal_receipt(final_hash="0" * 64)
@@ -295,6 +325,33 @@ class SkillCandidateTests(unittest.TestCase):
         self.assertEqual(
             (self.installed / "SKILL.md").read_text(encoding="utf-8"),
             "installed\n",
+        )
+
+    def test_promote_skill_cli_allows_explicit_new_install(self):
+        stage_skill_candidate(self.installed, self.acceptance, self.candidate)
+        (self.candidate / "skill" / "SKILL.md").write_text(
+            "candidate\n", encoding="utf-8"
+        )
+        self._write_terminal_receipt()
+        shutil.rmtree(self.installed)
+
+        result = self._run_cli(
+            "promote-skill",
+            "--candidate-repo",
+            str(self.candidate),
+            "--installed-skill",
+            str(self.installed),
+            "--terminal-receipt",
+            str(self.terminal_receipt),
+            "--allow-new-install",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["install_mode"], "new")
+        self.assertEqual(
+            (self.installed / "SKILL.md").read_text(encoding="utf-8"),
+            "candidate\n",
         )
 
     def _write_terminal_receipt(

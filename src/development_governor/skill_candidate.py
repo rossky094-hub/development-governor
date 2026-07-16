@@ -66,7 +66,11 @@ def stage_skill_candidate(
 
 
 def promote_skill_candidate(
-    candidate_repo: Path, installed_skill: Path, terminal_receipt_path: Path
+    candidate_repo: Path,
+    installed_skill: Path,
+    terminal_receipt_path: Path,
+    *,
+    allow_new_install: bool = False,
 ) -> dict:
     candidate_repo = _validated_candidate_repo(candidate_repo)
     candidate_skill = _validated_source_tree(
@@ -88,47 +92,70 @@ def promote_skill_candidate(
         raise SkillCandidateError("terminal receipt product tree hash is stale")
 
     try:
-        installed_resolved = installed_skill.resolve(strict=True)
+        installed_parent = installed_skill.parent.resolve(strict=True)
     except (FileNotFoundError, OSError) as error:
-        raise SkillCandidateError("installed_skill must be an existing directory") from error
-    if installed_skill.is_symlink() or not installed_resolved.is_dir():
-        raise SkillCandidateError("installed_skill must be a real directory")
+        raise SkillCandidateError(
+            "installed_skill parent must be an existing directory"
+        ) from error
+    if installed_skill.parent.is_symlink() or not installed_parent.is_dir():
+        raise SkillCandidateError("installed_skill parent must be a real directory")
+    installed_resolved = installed_parent / installed_skill.name
+    if installed_skill.is_symlink():
+        raise SkillCandidateError("installed_skill must not be a symbolic link")
+    if installed_resolved.exists():
+        if not installed_resolved.is_dir():
+            raise SkillCandidateError("installed_skill must be a real directory")
+        install_mode = "replace"
+    else:
+        if not allow_new_install:
+            raise SkillCandidateError(
+                "installed_skill does not exist; set allow_new_install explicitly"
+            )
+        install_mode = "new"
     if installed_resolved == candidate_repo or candidate_repo in installed_resolved.parents:
         raise SkillCandidateError("installed_skill must be outside candidate_repo")
     if installed_resolved in candidate_repo.parents:
         raise SkillCandidateError("candidate_repo must be outside installed_skill")
 
     source_content_hash = _directory_content_hash(candidate_skill)
-    previous_hash = hash_path_set(
-        installed_resolved.parent, (installed_resolved.name + "/",)
-    )
+    previous_hash = None
+    if install_mode == "replace":
+        previous_hash = hash_path_set(
+            installed_resolved.parent, (installed_resolved.name + "/",)
+        )
     stage_path = Path(
         tempfile.mkdtemp(
             prefix="." + installed_resolved.name + ".governor-stage-",
             dir=str(installed_resolved.parent),
         )
     )
-    backup_path = installed_resolved.parent / (
-        "." + installed_resolved.name + ".governor-backup-" + uuid.uuid4().hex
-    )
+    backup_path = None
+    if install_mode == "replace":
+        backup_path = installed_resolved.parent / (
+            "." + installed_resolved.name + ".governor-backup-" + uuid.uuid4().hex
+        )
     backup_created = False
     installed_replaced = False
     try:
         shutil.copytree(candidate_skill, stage_path, dirs_exist_ok=True)
         if _directory_content_hash(stage_path) != source_content_hash:
             raise SkillCandidateError("staged promotion copy hash mismatch")
-        os.replace(str(installed_resolved), str(backup_path))
-        backup_created = True
+        if install_mode == "replace":
+            os.replace(str(installed_resolved), str(backup_path))
+            backup_created = True
+        elif installed_resolved.exists():
+            raise SkillCandidateError("new installed_skill target appeared during promotion")
         os.replace(str(stage_path), str(installed_resolved))
         installed_replaced = True
         if _directory_content_hash(installed_resolved) != source_content_hash:
             raise SkillCandidateError("installed promotion copy hash mismatch")
-        shutil.rmtree(backup_path)
-        backup_created = False
+        if backup_created:
+            shutil.rmtree(backup_path)
+            backup_created = False
     except Exception:
         if installed_replaced and installed_resolved.exists():
             shutil.rmtree(installed_resolved)
-        if backup_created and backup_path.exists():
+        if backup_created and backup_path is not None and backup_path.exists():
             os.replace(str(backup_path), str(installed_resolved))
         if stage_path.exists():
             shutil.rmtree(stage_path)
@@ -138,6 +165,7 @@ def promote_skill_candidate(
         "status": "promoted",
         "candidate_repo": str(candidate_repo),
         "installed_skill": str(installed_resolved),
+        "install_mode": install_mode,
         "candidate_skill_tree_hash": candidate_hash,
         "previous_installed_tree_hash": previous_hash,
         "installed_skill_tree_hash": hash_path_set(

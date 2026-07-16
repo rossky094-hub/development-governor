@@ -124,6 +124,11 @@ def main(argv=None) -> int:
     promote.add_argument("--candidate-repo", required=True)
     promote.add_argument("--installed-skill", required=True)
     promote.add_argument("--terminal-receipt", required=True)
+    promote.add_argument(
+        "--allow-new-install",
+        action="store_true",
+        help="explicitly authorize creation of an absent installed Skill directory",
+    )
 
     enroll = subparsers.add_parser(
         "enroll", help="register one project policy without model use"
@@ -271,6 +276,7 @@ def main(argv=None) -> int:
                 Path(args.candidate_repo),
                 Path(args.installed_skill),
                 Path(args.terminal_receipt),
+                allow_new_install=args.allow_new_install,
             )
         else:
             contract = _load_contract(args.contract)

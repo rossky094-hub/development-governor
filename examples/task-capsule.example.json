@@ -1,0 +1,30 @@
+{
+  "schema_version": "development-governor-task-capsule.v0",
+  "repo_path": "/absolute/path/to/your-project",
+  "owner_request_ref": "owner:request/replace-with-real-reference",
+  "result": "Deliver one observable, bounded product capability.",
+  "constraints": [
+    "Do not modify protected acceptance material.",
+    "Do not claim completion before frozen verification passes."
+  ],
+  "evidence_inputs": [
+    "README.md",
+    "acceptance/run_tests.py"
+  ],
+  "acceptance_ids": [
+    "unit-tests"
+  ],
+  "deliverable_paths": [
+    "src/feature.py",
+    "tests/test_feature.py"
+  ],
+  "limits": {
+    "max_attempts": 1,
+    "max_review_waves": 0,
+    "max_elapsed_seconds": 3600,
+    "lease_seconds": 3600,
+    "max_parallel_agents": 1,
+    "max_total_agents": 1
+  },
+  "lanes": []
+}

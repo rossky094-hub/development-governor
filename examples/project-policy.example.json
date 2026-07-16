@@ -1,0 +1,36 @@
+{
+  "schema_version": "development-governor-project-policy.v0",
+  "repo_path": "/absolute/path/to/your-project",
+  "owner_authorization_ref": "owner:decision/replace-with-real-reference",
+  "allowed_paths": [
+    "src/",
+    "tests/",
+    "README.md"
+  ],
+  "protected_paths": [
+    "acceptance/"
+  ],
+  "acceptance_definitions": [
+    {
+      "acceptance_id": "unit-tests",
+      "argv": [
+        "python3",
+        "acceptance/run_tests.py"
+      ],
+      "files": [
+        {
+          "path": "acceptance/run_tests.py",
+          "sha256": "replace-with-the-file-sha256-before-enrollment"
+        }
+      ]
+    }
+  ],
+  "limits": {
+    "max_attempts": 2,
+    "max_review_waves": 1,
+    "max_elapsed_seconds": 7200,
+    "lease_seconds": 3600,
+    "max_parallel_agents": 4,
+    "max_total_agents": 4
+  }
+}

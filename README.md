@@ -22,7 +22,7 @@ product evidence.
 Requires Python 3.9+ and Git.
 
 ```bash
-pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.2
+pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
 governor demo
 ```
 
@@ -30,7 +30,7 @@ governor demo
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.2
+.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
 .venv/bin/governor demo
 ```
 
@@ -116,6 +116,8 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
   verifiable lanes, not disabled globally.
 
 Read the full [control boundary and threat model](docs/public/control-boundary.md).
+The separate [Governor / Skill responsibility contract](docs/public/governor-skill-responsibility-contract.md)
+defines why semantic authoring and review Skills never acquire leases or Owner authority.
 
 ## Optional default Codex entry
 
@@ -148,7 +150,7 @@ governor default-disable
 
 ## Status
 
-`v0.1.0-beta.2` is a public experiment. The deterministic kernel and default-entry
+`v0.1.0-beta.3` is a public experiment. The deterministic kernel and default-entry
 path have local test coverage; live savings and broad compatibility have not been
 established. Please report a minimal reproduction through
 [GitHub Issues](https://github.com/rossky094-hub/development-governor/issues).

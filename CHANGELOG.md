@@ -2,6 +2,23 @@
 
 All notable public changes are documented here.
 
+## 0.1.0b3 - 2026-07-16
+
+Deterministic hardening and Skill-boundary release.
+
+- Bind task evidence inputs by content hash and reject stale evidence before start,
+  isolated checks, and verification.
+- Execute frozen checks and acceptance in disposable repository snapshots; fail closed
+  when the Hook cannot establish an opaque command's write set.
+- Add explicit, hash-bound policy migration and default-runtime upgrade receipts with
+  managed projection integrity checks.
+- Accept independently verified Skill candidates through project verification receipts;
+  require `--allow-new-install` for an absent installation target.
+- Separate high-stakes spec authoring, semantic drift analysis, acceptance review, and
+  deterministic runtime control into non-overlapping roles.
+- Preserve the experimental boundary: no production-readiness, measured savings, or
+  Owner-authentication claim.
+
 ## 0.1.0b2 - 2026-07-16
 
 Targeted verification repair.

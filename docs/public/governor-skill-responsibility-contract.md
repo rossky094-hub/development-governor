@@ -56,6 +56,13 @@ an immutable migration receipt. Runtime upgrade similarly requires an explicit O
 reference, validates the currently managed AGENTS block and Hook group, installs a
 content-addressed runtime, preserves unrelated user content, and records history.
 
+Skill promotion accepts a hash-current complete run receipt or a project verification receipt
+whose checks ran in isolated snapshots and produced Product Evidence. Replacement remains
+the default. Creating an absent installed Skill requires the explicit
+`promote-skill --allow-new-install` flag, and the terminal result records
+`install_mode: new`; otherwise it fails closed. Promotion preserves supplied authority
+references but does not authenticate the Owner or reviewer behind them.
+
 ## Frozen beta.3 acceptance
 
 1. Changed evidence cannot start the old task; updating the declared digest changes
@@ -66,6 +73,8 @@ content-addressed runtime, preserves unrelated user content, and records history
    not mutate the governed repository.
 4. Runtime and policy migrations are explicit, hash-bound, lease-safe, and integrity
    checked.
+5. A new Skill installation is impossible without an explicit flag and an external,
+   hash-bound successful terminal receipt.
 
 Passing these conditions does not prove that a specification is correct, the work is
 valuable, or the Owner made a good decision.

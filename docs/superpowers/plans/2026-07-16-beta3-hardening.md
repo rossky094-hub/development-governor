@@ -78,7 +78,7 @@
 - [x] Write failing tests for active-lease migration rejection, stale expected policy hash, immutable migration receipt, runtime drift detection, explicit upgrade, unrelated-content preservation, and managed-block tamper detection.
 - [x] Implement `migrate-policy` with exact old hash, same project identity, Owner reference, no active lease, atomic replacement, and receipt history.
 - [x] Implement `default-upgrade` with managed-block/Hook integrity validation, new content-addressed runtime installation, atomic manifest replacement, and history.
-- [ ] Run frozen `beta3_ops_acceptance.py` and full regression; close the operations lease.
+- [x] Run frozen `beta3_ops_acceptance.py` and full regression; close the operations lease.
 
 ### Task 6: Refactor and create Skills one at a time
 
@@ -87,12 +87,12 @@
 - Amend candidate: `reviewing-specs-before-acceptance/SKILL.md`
 - Create candidate: `authoring-high-stakes-specs/SKILL.md`
 
-- [ ] Snapshot each installed Skill and create RED pressure scenarios before editing it.
-- [ ] Reduce `controlling-design-drift` to findings, affected scopes, safe work, missing obligations, and recommendations; remove Controller, budget, fuse, and commit authority.
-- [ ] Record v4-002 as incomplete and superseded rather than manufacturing a green receipt.
-- [ ] Keep spec review independent, but require explicit acceptance targets and Owner-reserved review budget before high-stakes independent scopes.
-- [ ] Create the authoring Skill with draft-only authority and three pressure scenarios covering self-acceptance, invented authority, and unnecessary use on a bounded Product Slice.
-- [ ] Promote each Skill only after its own hash-bound eval receipt; never batch unverified Skills.
+- [x] Snapshot each installed Skill and create RED pressure scenarios before editing it.
+- [x] Reduce `controlling-design-drift` to findings, affected scopes, safe work, missing obligations, and recommendations; remove Controller, budget, fuse, and commit authority.
+- [x] Record v4-002 as incomplete and superseded rather than manufacturing a green receipt.
+- [x] Keep spec review independent, but require explicit acceptance targets and Owner-reserved review budget before high-stakes independent scopes.
+- [x] Create the authoring Skill with draft-only authority and pressure scenarios covering self-acceptance, invented authority, unnecessary use on a bounded Product Slice, and an unfrozen parent.
+- [x] Promote each Skill only after its own hash-bound eval receipt; never batch unverified Skills.
 
 ### Task 7: Integrate, publish, and activate
 
@@ -102,7 +102,7 @@
 - Create: `docs/releases/v0.1.0-beta.3.md`
 - Modify: `tests/test_public_release.py`
 
-- [ ] Run one real high-stakes-spec flow through authoring, optional drift analysis, freeze, bounded review, Owner-decision boundary, and a separate Governor implementation capsule without executing product mutation.
-- [ ] Verify wheel installation, `governor demo`, frozen core/ops acceptance, full unit regression, and Git cleanliness.
+- [x] Run one explicitly synthetic high-stakes-spec flow through authoring, drift analysis, freeze, bounded review, the real Owner-decision boundary, and a separate Governor implementation capsule without executing product mutation.
+- [x] Verify wheel installation, `governor demo`, frozen core/ops acceptance, full unit regression, and Git cleanliness.
 - [ ] Publish `v0.1.0-beta.3` only after CI succeeds; never move beta.1 or beta.2 tags.
 - [ ] Run `default-upgrade` against the verified beta.3 source with this Owner authorization, confirm `governor demo`, and archive the upgrade receipt.

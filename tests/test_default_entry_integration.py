@@ -96,12 +96,21 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
 
     def capsule(self):
         return {
-            "schema_version": "development-governor-task-capsule.v0",
+            "schema_version": "development-governor-task-capsule.v1",
             "repo_path": str(self.repo),
             "owner_request_ref": "codex:user-turn/integration",
             "result": "Keep one executable product slice working",
             "constraints": ["Acceptance files are frozen"],
-            "evidence_inputs": ["README.md", "src/app.py"],
+            "evidence_inputs": [
+                {
+                    "path": "README.md",
+                    "sha256": hashlib.sha256((self.repo / "README.md").read_bytes()).hexdigest(),
+                },
+                {
+                    "path": "src/app.py",
+                    "sha256": hashlib.sha256((self.repo / "src" / "app.py").read_bytes()).hexdigest(),
+                },
+            ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],
             "limits": {

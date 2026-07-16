@@ -101,12 +101,15 @@ class ProjectEntryTests(unittest.TestCase):
 
     def capsule(self, **overrides):
         raw = {
-            "schema_version": "development-governor-task-capsule.v0",
+            "schema_version": "development-governor-task-capsule.v1",
             "repo_path": str(self.repo),
             "owner_request_ref": "codex:user-turn/test-task",
             "result": "Deliver one working product slice",
             "constraints": ["Do not edit acceptance files"],
-            "evidence_inputs": ["README.md", "src/app.py"],
+            "evidence_inputs": [
+                {"path": "README.md", "sha256": self.digest("README.md")},
+                {"path": "src/app.py", "sha256": self.digest("src/app.py")},
+            ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],
             "limits": {
@@ -179,6 +182,29 @@ class ProjectEntryTests(unittest.TestCase):
         self.assertTrue(Path(prepared["task_path"]).is_file())
         self.assertEqual(status["lease_status"], "none")
         self.assertEqual(len(prepared["task_hash"]), 64)
+
+    def test_evidence_content_hash_is_bound_and_rechecked_before_start(self):
+        self.enroll()
+        raw = self.capsule(
+            schema_version="development-governor-task-capsule.v1",
+            evidence_inputs=[
+                {"path": "README.md", "sha256": self.digest("README.md")}
+            ],
+        )
+        first_path = self.root / "content-bound-task.json"
+        self.write_json(first_path, raw)
+        first = prepare_task(first_path, state_root=self.state_root)
+
+        (self.repo / "README.md").write_text("changed evidence\n", encoding="utf-8")
+        with self.assertRaisesRegex(ProjectEntryError, "evidence input hash mismatch"):
+            start_task(first["task_hash"], state_root=self.state_root)
+
+        raw["evidence_inputs"][0]["sha256"] = self.digest("README.md")
+        second_path = self.root / "updated-content-bound-task.json"
+        self.write_json(second_path, raw)
+        second = prepare_task(second_path, state_root=self.state_root)
+
+        self.assertNotEqual(first["task_hash"], second["task_hash"])
 
     def test_prepare_rejects_incomplete_unknown_and_over_budget_capsules(self):
         self.enroll()

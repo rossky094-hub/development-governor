@@ -19,7 +19,7 @@ DEFAULT_STATE_ROOT = Path(
     )
 ).expanduser()
 POLICY_SCHEMA = "development-governor-project-policy.v0"
-TASK_SCHEMA = "development-governor-task-capsule.v0"
+TASK_SCHEMA = "development-governor-task-capsule.v1"
 
 
 class ProjectEntryError(ValueError):
@@ -107,6 +107,41 @@ def _string_array(value: Any, label: str, *, allow_empty: bool = False) -> Tuple
     if len(result) != len(set(result)):
         raise ProjectEntryError(f"{label} entries must be unique")
     return result
+
+
+def _validated_evidence_inputs(value: Any, repo: Path) -> Tuple[Mapping[str, str], ...]:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ProjectEntryError("evidence_inputs must be a non-empty array")
+    records = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ProjectEntryError("evidence input must be an object")
+        _require_exact_keys(item, {"path", "sha256"}, "evidence input")
+        path = _relative_path(item["path"], "evidence inputs")
+        digest = _nonempty_string(item["sha256"], "evidence input sha256")
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ProjectEntryError(
+                "evidence input sha256 must be lowercase hexadecimal"
+            )
+        if path in seen:
+            raise ProjectEntryError("evidence input paths must be unique")
+        seen.add(path)
+        actual = repo / path
+        if not actual.is_file() or _file_sha256(actual) != digest:
+            raise ProjectEntryError("evidence input hash mismatch: " + path)
+        records.append({"path": path, "sha256": digest})
+    return tuple(records)
+
+
+def _verify_evidence_inputs(task: Mapping[str, Any]) -> None:
+    repo = Path(task["project_identity"]["repo_path"])
+    for item in task["evidence_inputs"]:
+        path = repo / item["path"]
+        if not path.is_file() or _file_sha256(path) != item["sha256"]:
+            raise ProjectEntryError("evidence input hash mismatch: " + item["path"])
 
 
 def _path_matches(path: str, prefix: str) -> bool:
@@ -381,10 +416,7 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         raise ProjectEntryError("task capsule repository is not the enrolled project")
     result = _nonempty_string(raw["result"], "result")
     constraints = _string_array(raw["constraints"], "constraints")
-    evidence = _path_array(raw["evidence_inputs"], "evidence_inputs")
-    for path in evidence:
-        if not (Path(identity["repo_path"]) / path.rstrip("/")).exists():
-            raise ProjectEntryError(f"evidence input does not exist: {path}")
+    evidence = _validated_evidence_inputs(raw["evidence_inputs"], Path(identity["repo_path"]))
     acceptance_ids = _string_array(raw["acceptance_ids"], "acceptance_ids")
     known_acceptance = {
         item["acceptance_id"] for item in policy["acceptance_definitions"]
@@ -452,7 +484,7 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         "owner_request_ref": _nonempty_string(raw["owner_request_ref"], "owner_request_ref"),
         "result": result,
         "constraints": list(constraints),
-        "evidence_inputs": list(evidence),
+        "evidence_inputs": [dict(item) for item in evidence],
         "acceptance_ids": list(acceptance_ids),
         "deliverable_paths": list(deliverables),
         "limits": limits,
@@ -590,6 +622,7 @@ def start_task(task_ref: str, *, state_root: Path = DEFAULT_STATE_ROOT, now=None
         _, enrolled = _load_enrollment(task["project_identity"], state_root)
         if enrolled["policy_hash"] != task["policy_hash"]:
             raise ProjectEntryError("prepared task policy hash mismatch")
+        _verify_evidence_inputs(task)
         task_path = task_dir / "task.json"
         if not task_path.is_file() or _sha256(_load_json(task_path)) != task_hash:
             raise ProjectEntryError("prepared task hash mismatch")

@@ -240,7 +240,7 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
         enabled = default_enable(
             codex_home=self.codex_home,
             source_package=source_a,
-            governor_repo=self.project_root,
+            governor_repo=None,
         )
 
         drift = self.call("default-enable", "--codex-home", str(self.codex_home))

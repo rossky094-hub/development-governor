@@ -21,7 +21,7 @@ class DefaultActivationTests(unittest.TestCase):
         self.codex_home = self.root / ".codex"
         self.codex_home.mkdir()
         self.source_package = Path(__file__).resolve().parents[1] / "src" / "development_governor"
-        self.governor_repo = Path(__file__).resolve().parents[1]
+        self.governor_repo = None
         self.agents_path = self.codex_home / "AGENTS.md"
         self.hooks_path = self.codex_home / "hooks.json"
 

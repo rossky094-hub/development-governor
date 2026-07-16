@@ -208,7 +208,7 @@ def _validated_external_terminal_receipt(
         raise SkillCandidateError("terminal receipt must be a JSON object")
     acceptance = receipt.get("acceptance")
     verification = receipt.get("verification")
-    complete = (
+    run_complete = (
         receipt.get("schema_version") == "development-governor.run-receipt.v0"
         and receipt.get("status") == "complete"
         and receipt.get("product_evidence") is True
@@ -222,7 +222,22 @@ def _validated_external_terminal_receipt(
         and isinstance(verification, dict)
         and verification.get("exit_code") == 0
     )
-    if not complete:
+    results = receipt.get("results")
+    project_verification_complete = (
+        receipt.get("schema_version")
+        == "development-governor-verification-receipt.v0"
+        and receipt.get("status") == "verification_passed"
+        and receipt.get("product_evidence") is True
+        and isinstance(results, list)
+        and bool(results)
+        and all(
+            isinstance(result, dict)
+            and result.get("returncode") == 0
+            and result.get("execution_mode") == "isolated_snapshot"
+            for result in results
+        )
+    )
+    if not (run_complete or project_verification_complete):
         raise SkillCandidateError("promotion requires a complete terminal receipt")
     return resolved, receipt, hashlib.sha256(raw).hexdigest()
 

@@ -48,6 +48,12 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _path_set_hash(root: Path, paths: Sequence[str]) -> str:
+    from development_governor.runner import hash_path_set
+
+    return hash_path_set(root, paths)
+
+
 def _load_json(path: Path) -> Mapping[str, Any]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
@@ -610,6 +616,9 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         "evidence_inputs": [dict(item) for item in evidence],
         "acceptance_ids": list(acceptance_ids),
         "deliverable_paths": list(deliverables),
+        "baseline_product_tree_hash": _path_set_hash(
+            Path(identity["repo_path"]), deliverables
+        ),
         "limits": limits,
         "lanes": lanes,
     }
@@ -1001,6 +1010,10 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
         results.append(result)
         all_passed = all_passed and result["returncode"] == 0
     timestamp = _clock_value(now)
+    final_product_tree_hash = _path_set_hash(
+        Path(identity["repo_path"]), task["deliverable_paths"]
+    )
+    baseline_product_tree_hash = task.get("baseline_product_tree_hash")
     receipt = {
         "schema_version": "development-governor-verification-receipt.v0",
         "project_id": identity["project_id"],
@@ -1009,6 +1022,16 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
         "lease_id": decision["lease_id"],
         "verified_at": timestamp,
         "status": "verification_passed" if all_passed else "verification_failed",
+        "product_evidence": (
+            isinstance(baseline_product_tree_hash, str)
+            and baseline_product_tree_hash != final_product_tree_hash
+        ),
+        "repository": {
+            "path": identity["repo_path"],
+            "product_paths": list(task["deliverable_paths"]),
+            "baseline_product_tree_hash": baseline_product_tree_hash,
+            "final_product_tree_hash": final_product_tree_hash,
+        },
         "results": results,
     }
     receipt_path = task_dir / "verifications" / (f"{int(timestamp * 1000000)}.json")

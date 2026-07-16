@@ -413,6 +413,31 @@ class ProjectEntryTests(unittest.TestCase):
         self.assertEqual((self.repo / "src" / "app.py").read_bytes(), original)
         self.assertFalse((self.repo / "created-by-acceptance.txt").exists())
 
+    def test_verification_receipt_binds_baseline_and_final_deliverable_trees(self):
+        prepared = self.prepare(
+            evidence_inputs=[
+                {"path": "README.md", "sha256": self.digest("README.md")}
+            ]
+        )
+        task = json.loads(Path(prepared["task_path"]).read_text(encoding="utf-8"))
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = verify_task(self.repo, state_root=self.state_root, now=101.0)
+        receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+
+        self.assertEqual(receipt["repository"]["path"], str(self.repo.resolve()))
+        self.assertEqual(receipt["repository"]["product_paths"], ["src/"])
+        self.assertEqual(
+            receipt["repository"]["baseline_product_tree_hash"],
+            task["baseline_product_tree_hash"],
+        )
+        self.assertNotEqual(
+            receipt["repository"]["baseline_product_tree_hash"],
+            receipt["repository"]["final_product_tree_hash"],
+        )
+        self.assertTrue(receipt["product_evidence"])
+
     def test_unverified_task_requires_explicit_owner_abort_to_close(self):
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)

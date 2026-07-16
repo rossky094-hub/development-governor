@@ -321,6 +321,25 @@ class ProjectEntryTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectEntryError, "acceptance file hash mismatch"):
             verify_task(self.repo, state_root=self.state_root, now=101.0)
 
+    def test_verification_runs_in_snapshot_without_mutating_source_repository(self):
+        (self.repo / "acceptance" / "verify.py").write_text(
+            "from pathlib import Path\n"
+            "Path('src/app.py').write_text('MUTATED\\n', encoding='utf-8')\n"
+            "Path('created-by-acceptance.txt').write_text('created\\n', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        self.write_json(self.policy_path, self.policy())
+        original = (self.repo / "src" / "app.py").read_bytes()
+        prepared = self.prepare()
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+
+        result = verify_task(self.repo, state_root=self.state_root, now=101.0)
+
+        self.assertEqual(result["status"], "verification_passed")
+        self.assertEqual(result["results"][0]["execution_mode"], "isolated_snapshot")
+        self.assertEqual((self.repo / "src" / "app.py").read_bytes(), original)
+        self.assertFalse((self.repo / "created-by-acceptance.txt").exists())
+
     def test_unverified_task_requires_explicit_owner_abort_to_close(self):
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)

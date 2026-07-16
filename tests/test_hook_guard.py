@@ -248,7 +248,7 @@ class HookGuardTests(unittest.TestCase):
             {},
         )
 
-    def test_active_lease_allows_test_commands_that_do_not_name_write_targets(self):
+    def test_active_lease_denies_commands_that_do_not_expose_their_write_set(self):
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
 
@@ -261,7 +261,13 @@ class HookGuardTests(unittest.TestCase):
             now=101.0,
         )
 
-        self.assertEqual(result, {})
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn(
+            "isolated check",
+            result["hookSpecificOutput"]["permissionDecisionReason"],
+        )
 
 
 if __name__ == "__main__":

@@ -155,6 +155,19 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
         self.assertEqual(denied_before["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertEqual(self.call("start", prepared["task_hash"])["status"], "active")
         self.assertEqual(self.call("hook-guard", input_text=json.dumps(self.hook_event())), {})
+        original = (self.repo / "src" / "app.py").read_bytes()
+        checked = self.call(
+            "check",
+            "--repo",
+            str(self.repo),
+            "--",
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('src/app.py').write_text('temporary')",
+        )
+        self.assertEqual(checked["status"], "check_passed")
+        self.assertEqual(checked["execution_mode"], "isolated_snapshot")
+        self.assertEqual((self.repo / "src" / "app.py").read_bytes(), original)
         self.assertEqual(self.call("verify", "--repo", str(self.repo))["status"], "verification_passed")
         self.assertEqual(self.call("close", "--repo", str(self.repo))["status"], "closed")
         denied_after = self.call("hook-guard", input_text=json.dumps(self.hook_event()))

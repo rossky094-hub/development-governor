@@ -68,13 +68,14 @@ governor enroll /outside/project-policy.json
 governor prepare /outside/task-capsule.json
 governor start <task-hash>
 governor status --repo /path/to/project
+governor check --repo /path/to/project -- python3 -m unittest -q
 governor verify --repo /path/to/project
 governor close --repo /path/to/project
 ```
 
 Policies and task capsules are stored outside the governed repository. Acceptance
-commands are argv arrays executed with `shell=False`; declared acceptance files are
-hash checked before verification.
+commands are argv arrays executed with `shell=False` in disposable repository
+snapshots; declared acceptance files and task evidence inputs are content-hash checked.
 
 See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 [policy](examples/project-policy.example.json) and
@@ -85,7 +86,9 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 - External, append-only project policy and task state.
 - A bounded lease before supported Codex mutation paths may write.
 - Exact deliverable paths and protected acceptance material.
-- Frozen acceptance IDs, commands, and file hashes.
+- Frozen acceptance IDs, commands, file hashes, and content-bound evidence inputs.
+- Fail-closed handling for opaque shell commands plus a non-promoting isolated check
+  entry for tests and other commands whose write set cannot be inferred.
 - Attempts, elapsed time, review waves, and declared agent limits.
 - Serial TDD slices with no extra probe/reviewer lanes.
 - Native multi-agent work when two or more lanes have disjoint deliverables and
@@ -99,8 +102,11 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 - The Codex `PreToolUse` Hook covers supported, recognizable mutation paths; manual
   edits, other applications, unhooked MCP tools, and future Codex behavior may bypass
   it.
+- Snapshot execution protects the governed repository from ordinary relative writes;
+  it does not confine malicious absolute writes to unrelated host paths.
 - It cannot guarantee that a specification is correct or that an accepted change is
   useful.
+- Owner references are preserved and audited but not cryptographically authenticated.
 - Token telemetry is optional and may be unavailable. This beta makes no measured
   cost-saving, quality-improvement, or productivity claim.
 - It does not make every task single-agent. Parallelism is admitted by independently

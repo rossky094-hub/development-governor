@@ -23,6 +23,7 @@ _GOVERNOR_COMMANDS = {
     "prepare",
     "start",
     "status",
+    "check",
     "verify",
     "close",
     "default-enable",
@@ -221,6 +222,11 @@ def _scope_denial(
     paths = _patch_paths(source, repo) if patch_capable else _explicit_shell_paths(source, repo)
     if patch_capable and not paths:
         return "Governor could not establish patch paths inside the active task scope."
+    if normalized_name in _SHELL_TOOL_NAMES and not patch_capable and not paths:
+        return (
+            "Opaque shell command has no provable write set; run it through the "
+            "Governor isolated check entry."
+        )
     allowed = tuple(decision.get("allowed_paths", ()))
     protected = tuple(decision.get("protected_paths", ()))
     for path in paths:

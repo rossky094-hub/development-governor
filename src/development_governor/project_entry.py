@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import subprocess
 import tempfile
 import time
@@ -142,6 +143,54 @@ def _verify_evidence_inputs(task: Mapping[str, Any]) -> None:
         path = repo / item["path"]
         if not path.is_file() or _file_sha256(path) != item["sha256"]:
             raise ProjectEntryError("evidence input hash mismatch: " + item["path"])
+
+
+@contextmanager
+def _isolated_repository_snapshot(repo_path: Path):
+    repo = Path(repo_path).resolve()
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        shell=False,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ProjectEntryError("cannot enumerate repository snapshot")
+    raw_paths = [item for item in completed.stdout.split(b"\0") if item]
+    with tempfile.TemporaryDirectory(prefix="development-governor-snapshot-") as directory:
+        snapshot = Path(directory) / "repo"
+        snapshot.mkdir()
+        for raw_path in raw_paths:
+            relative = _relative_path(os.fsdecode(raw_path), "repository snapshot")
+            source = repo / relative
+            if not source.exists() and not source.is_symlink():
+                continue
+            target = snapshot / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_symlink():
+                try:
+                    source.resolve().relative_to(repo)
+                except ValueError as error:
+                    raise ProjectEntryError(
+                        "repository snapshot contains an escaping symlink: " + relative
+                    ) from error
+                target.symlink_to(os.readlink(source))
+            elif source.is_file():
+                shutil.copy2(source, target)
+            else:
+                raise ProjectEntryError(
+                    "repository snapshot supports files only: " + relative
+                )
+        yield snapshot
 
 
 def _path_matches(path: str, prefix: str) -> bool:
@@ -769,8 +818,48 @@ def authorize_mutation(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT
     }
 
 
-def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=None) -> Mapping[str, Any]:
-    """Run only the acceptance commands frozen by project enrollment."""
+def _run_snapshot_command(
+    repo_path: Path, argv: Sequence[str], *, timeout: float
+) -> Mapping[str, Any]:
+    if not isinstance(argv, (list, tuple)) or not argv or any(
+        not isinstance(part, str) or not part for part in argv
+    ):
+        raise ProjectEntryError("isolated command argv must be a non-empty string array")
+    with _isolated_repository_snapshot(repo_path) as snapshot:
+        try:
+            completed = subprocess.run(
+                list(argv),
+                cwd=snapshot,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return {
+                "returncode": completed.returncode,
+                "stdout": completed.stdout[-20000:],
+                "stderr": completed.stderr[-20000:],
+                "execution_mode": "isolated_snapshot",
+            }
+        except subprocess.TimeoutExpired as error:
+            return {
+                "returncode": None,
+                "stdout": (error.stdout or "")[-20000:]
+                if isinstance(error.stdout, str)
+                else "",
+                "stderr": "isolated command timed out",
+                "execution_mode": "isolated_snapshot",
+            }
+
+
+def run_isolated_check(
+    repo_path: Path,
+    argv: Sequence[str],
+    *,
+    state_root: Path = DEFAULT_STATE_ROOT,
+    now=None,
+) -> Mapping[str, Any]:
+    """Run a non-promoting check in a disposable repository snapshot."""
 
     decision = authorize_mutation(repo_path, state_root=state_root, now=now)
     if not decision["allowed"]:
@@ -779,6 +868,39 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
     directory, enrolled = _load_enrollment(identity, state_root)
     task_dir = directory / "tasks" / decision["task_hash"]
     task = _load_json(task_dir / "task.json")
+    _verify_evidence_inputs(task)
+    timestamp = _clock_value(now)
+    remaining = max(1.0, float(decision["expires_at"]) - timestamp)
+    result = _run_snapshot_command(
+        Path(identity["repo_path"]), argv, timeout=min(300.0, remaining)
+    )
+    receipt = {
+        "schema_version": "development-governor-isolated-check-receipt.v0",
+        "project_id": identity["project_id"],
+        "policy_hash": enrolled["policy_hash"],
+        "task_hash": decision["task_hash"],
+        "lease_id": decision["lease_id"],
+        "checked_at": timestamp,
+        "argv": list(argv),
+        "status": "check_passed" if result["returncode"] == 0 else "check_failed",
+        **result,
+    }
+    receipt_path = task_dir / "checks" / (_sha256(receipt) + ".json")
+    _atomic_json(receipt_path, receipt)
+    return {**receipt, "receipt_path": str(receipt_path)}
+
+
+def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=None) -> Mapping[str, Any]:
+    """Run frozen acceptance commands in disposable repository snapshots."""
+
+    decision = authorize_mutation(repo_path, state_root=state_root, now=now)
+    if not decision["allowed"]:
+        raise ProjectEntryError("mutation lease not active: " + decision["reason"])
+    identity = canonical_project_identity(repo_path)
+    directory, enrolled = _load_enrollment(identity, state_root)
+    task_dir = directory / "tasks" / decision["task_hash"]
+    task = _load_json(task_dir / "task.json")
+    _verify_evidence_inputs(task)
     definitions = {
         item["acceptance_id"]: item
         for item in enrolled["policy"]["acceptance_definitions"]
@@ -794,28 +916,14 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
                     "acceptance file hash mismatch: " + frozen["path"]
                 )
         remaining = max(1.0, float(decision["expires_at"]) - _clock_value(now))
-        try:
-            completed = subprocess.run(
-                list(definition["argv"]),
-                cwd=identity["repo_path"],
-                shell=False,
-                capture_output=True,
-                text=True,
+        result = {
+            "acceptance_id": acceptance_id,
+            **_run_snapshot_command(
+                Path(identity["repo_path"]),
+                definition["argv"],
                 timeout=min(300.0, remaining),
-            )
-            result = {
-                "acceptance_id": acceptance_id,
-                "returncode": completed.returncode,
-                "stdout": completed.stdout[-20000:],
-                "stderr": completed.stderr[-20000:],
-            }
-        except subprocess.TimeoutExpired as error:
-            result = {
-                "acceptance_id": acceptance_id,
-                "returncode": None,
-                "stdout": (error.stdout or "")[-20000:] if isinstance(error.stdout, str) else "",
-                "stderr": "acceptance command timed out",
-            }
+            ),
+        }
         results.append(result)
         all_passed = all_passed and result["returncode"] == 0
     timestamp = _clock_value(now)

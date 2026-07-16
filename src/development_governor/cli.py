@@ -39,6 +39,7 @@ from development_governor.project_entry import (
     enroll_project,
     prepare_task,
     project_status,
+    run_isolated_check,
     start_task,
     verify_task,
 )
@@ -142,6 +143,12 @@ def main(argv=None) -> int:
     status = subparsers.add_parser("status", help="show enrolled project and lease state")
     status.add_argument("--repo", required=True)
 
+    check = subparsers.add_parser(
+        "check", help="run a non-promoting command in an isolated repository snapshot"
+    )
+    check.add_argument("--repo", required=True)
+    check.add_argument("argv", nargs=argparse.REMAINDER)
+
     verify = subparsers.add_parser("verify", help="run frozen acceptance commands")
     verify.add_argument("--repo", required=True)
 
@@ -185,6 +192,13 @@ def main(argv=None) -> int:
         elif args.command == "status":
             payload = project_status(
                 Path(args.repo), state_root=DEFAULT_STATE_ROOT
+            )
+        elif args.command == "check":
+            command_argv = list(args.argv)
+            if command_argv and command_argv[0] == "--":
+                command_argv.pop(0)
+            payload = run_isolated_check(
+                Path(args.repo), command_argv, state_root=DEFAULT_STATE_ROOT
             )
         elif args.command == "verify":
             payload = verify_task(Path(args.repo), state_root=DEFAULT_STATE_ROOT)
@@ -312,6 +326,8 @@ def main(argv=None) -> int:
 
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     if args.command == "verify" and payload.get("status") != "verification_passed":
+        return 1
+    if args.command == "check" and payload.get("status") != "check_passed":
         return 1
     return 0
 

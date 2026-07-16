@@ -27,6 +27,18 @@ Owner-controlled migration.
 governor enroll /tmp/my-project-policy.json
 ```
 
+Enrollment is immutable during a task. With no active lease, migrate it only by
+presenting the exact current hash and an external Owner reference:
+
+```bash
+governor migrate-policy /tmp/my-replacement-policy.json \
+  --expected-policy-hash <current-policy-hash> \
+  --owner-authorization-ref <external-owner-reference>
+```
+
+The replacement must resolve to the same Git common-directory identity. A stale
+hash, unchanged policy, or active lease fails closed and no policy is replaced.
+
 ## 3. Freeze one bounded slice
 
 Copy `examples/task-capsule.example.json` outside the project. State one observable
@@ -73,3 +85,19 @@ governor close --repo /absolute/path/to/your-project \
 ```
 
 An abort is terminal evidence, not success.
+
+## 5. Upgrade an enabled default runtime explicitly
+
+Running `governor default-enable` against changed package content returns
+`upgrade_required`; it never silently overwrites the active runtime. Upgrade only
+with a real Owner reference:
+
+```bash
+governor default-upgrade \
+  --owner-authorization-ref <external-owner-reference>
+```
+
+The command first validates the current managed AGENTS block, managed Hook
+projection, and stable launcher files. It preserves unrelated user configuration,
+records the superseded manifest, and emits an immutable upgrade receipt. A reference
+is preserved as audit evidence; it is not cryptographic authentication of the Owner.

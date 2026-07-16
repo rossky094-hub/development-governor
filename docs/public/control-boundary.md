@@ -13,6 +13,11 @@
 - Verification resolves only pre-enrolled acceptance IDs, rechecks declared file
   hashes, and executes argv arrays with `shell=False` in fresh disposable snapshots.
 - A verified task closes; an explicit Owner abort records a distinct terminal state.
+- Policy replacement requires the exact enrolled policy hash, the same Git identity,
+  an external Owner reference, no active lease, and a migration receipt.
+- Default-runtime replacement is explicit: managed AGENTS/Hook projections and stable
+  launcher hashes are checked before a content-addressed upgrade is installed and
+  recorded. Unrelated configuration is outside the managed projection.
 - The supported Codex `PreToolUse` Hook denies recognizable mutations without a valid
   lease, rejects recognizable paths outside the task scope, and fails closed for an
   active-lease shell command whose write set cannot be established. Such commands may

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from development_governor.project_entry import (
     ProjectEntryError,
@@ -152,6 +153,78 @@ class ProjectEntryTests(unittest.TestCase):
         self.write_json(changed_path, changed)
         with self.assertRaisesRegex(ProjectEntryError, "conflicting enrolled policy"):
             enroll_project(changed_path, state_root=self.state_root)
+
+    def test_policy_migration_requires_no_lease_exact_hash_and_owner_reference(self):
+        from development_governor.project_entry import migrate_project_policy
+
+        enrolled = self.enroll()
+        replacement = self.policy(allowed_paths=["src/", "docs/"])
+        replacement_path = self.root / "replacement-policy.json"
+        self.write_json(replacement_path, replacement)
+        prepared = self.prepare()
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+
+        with self.assertRaisesRegex(ProjectEntryError, "active lease"):
+            migrate_project_policy(
+                replacement_path,
+                expected_policy_hash=enrolled["policy_hash"],
+                owner_authorization_ref="owner:approve-migration",
+                state_root=self.state_root,
+                now=101.0,
+            )
+
+        close_task(
+            self.repo,
+            state_root=self.state_root,
+            owner_abort_reason="Owner ended migration fixture",
+            now=102.0,
+        )
+        migrated = migrate_project_policy(
+            replacement_path,
+            expected_policy_hash=enrolled["policy_hash"],
+            owner_authorization_ref="owner:approve-migration",
+            state_root=self.state_root,
+            now=103.0,
+        )
+
+        self.assertEqual(migrated["status"], "policy_migrated")
+        self.assertTrue(Path(migrated["migration_receipt"]).is_file())
+        self.assertNotEqual(migrated["new_policy_hash"], enrolled["policy_hash"])
+        with self.assertRaisesRegex(ProjectEntryError, "expected policy hash"):
+            migrate_project_policy(
+                self.policy_path,
+                expected_policy_hash=enrolled["policy_hash"],
+                owner_authorization_ref="owner:stale-migration",
+                state_root=self.state_root,
+                now=104.0,
+            )
+
+    def test_policy_migration_rolls_back_when_receipt_write_fails(self):
+        from development_governor import project_entry
+        from development_governor.project_entry import migrate_project_policy
+
+        enrolled = self.enroll()
+        replacement = self.policy(allowed_paths=["src/", "docs/"])
+        replacement_path = self.root / "replacement-policy.json"
+        self.write_json(replacement_path, replacement)
+        real_atomic_json = project_entry._atomic_json
+
+        def fail_receipt(path, payload):
+            if "policy-migrations" in Path(path).parts:
+                raise OSError("simulated receipt failure")
+            return real_atomic_json(path, payload)
+
+        with mock.patch.object(project_entry, "_atomic_json", side_effect=fail_receipt):
+            with self.assertRaisesRegex(OSError, "simulated receipt failure"):
+                migrate_project_policy(
+                    replacement_path,
+                    expected_policy_hash=enrolled["policy_hash"],
+                    owner_authorization_ref="owner:rollback-migration",
+                    state_root=self.state_root,
+                    now=105.0,
+                )
+
+        self.assertEqual(self.enroll()["status"], "already_enrolled")
 
     def test_linked_worktrees_share_the_git_common_dir_project_identity(self):
         linked = self.root / "linked"

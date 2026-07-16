@@ -428,6 +428,80 @@ def enroll_project(policy_source: Any, *, state_root: Path = DEFAULT_STATE_ROOT)
     }
 
 
+def migrate_project_policy(
+    policy_source: Any,
+    *,
+    expected_policy_hash: str,
+    owner_authorization_ref: str,
+    state_root: Path = DEFAULT_STATE_ROOT,
+    now=None,
+) -> Mapping[str, Any]:
+    """Replace one enrolled policy under an exact Owner-authorized hash transition."""
+
+    expected = _nonempty_string(expected_policy_hash, "expected policy hash")
+    if len(expected) != 64 or any(
+        character not in "0123456789abcdef" for character in expected
+    ):
+        raise ProjectEntryError("expected policy hash must be lowercase hexadecimal")
+    owner_ref = _nonempty_string(
+        owner_authorization_ref, "owner_authorization_ref"
+    )
+    replacement = _validated_policy(_load_source(policy_source))
+    project_id = replacement["project_identity"]["project_id"]
+    new_policy_hash = _sha256(replacement)
+    timestamp = _clock_value(now)
+    with _project_lock(state_root, project_id) as directory:
+        policy_path = directory / "policy.json"
+        if not policy_path.is_file():
+            raise ProjectEntryError("needs_owner_enrollment")
+        enrolled = _load_json(policy_path)
+        if set(enrolled) != {"policy_hash", "policy"}:
+            raise ProjectEntryError("invalid enrolled project policy")
+        current_policy_hash = enrolled["policy_hash"]
+        if current_policy_hash != expected:
+            raise ProjectEntryError("expected policy hash does not match current policy")
+        if _sha256(enrolled["policy"]) != current_policy_hash:
+            raise ProjectEntryError("enrolled project policy hash mismatch")
+        if directory.joinpath("active-lease.json").exists():
+            raise ProjectEntryError("policy migration requires no active lease")
+        if new_policy_hash == current_policy_hash:
+            raise ProjectEntryError("replacement policy is unchanged")
+        history_path = directory / "policy-history" / (current_policy_hash + ".json")
+        if history_path.exists() and _load_json(history_path) != enrolled:
+            raise ProjectEntryError("policy history hash collision")
+        _atomic_json(history_path, enrolled)
+        receipt = {
+            "schema_version": "development-governor-policy-migration-receipt.v0",
+            "project_id": project_id,
+            "old_policy_hash": current_policy_hash,
+            "new_policy_hash": new_policy_hash,
+            "owner_authorization_ref": owner_ref,
+            "migrated_at": timestamp,
+            "old_policy_history": str(history_path),
+        }
+        receipt_path = directory / "policy-migrations" / (
+            f"{int(timestamp * 1000000)}-{new_policy_hash}.json"
+        )
+        try:
+            _atomic_json(
+                policy_path,
+                {"policy_hash": new_policy_hash, "policy": replacement},
+            )
+            _atomic_json(receipt_path, receipt)
+        except BaseException:
+            _atomic_json(policy_path, enrolled)
+            if receipt_path.exists():
+                receipt_path.unlink()
+            raise
+    return {
+        "status": "policy_migrated",
+        "project_id": project_id,
+        "old_policy_hash": current_policy_hash,
+        "new_policy_hash": new_policy_hash,
+        "migration_receipt": str(receipt_path),
+    }
+
+
 def _load_enrollment(identity: Mapping[str, str], state_root: Path) -> Tuple[Path, Mapping[str, Any]]:
     directory = _project_dir(state_root, identity["project_id"])
     policy_path = directory / "policy.json"

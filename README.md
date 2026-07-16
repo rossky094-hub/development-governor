@@ -65,6 +65,9 @@ The canonical project route is:
 
 ```bash
 governor enroll /outside/project-policy.json
+governor migrate-policy /outside/replacement-policy.json \
+  --expected-policy-hash <current-policy-hash> \
+  --owner-authorization-ref <external-owner-reference>
 governor prepare /outside/task-capsule.json
 governor start <task-hash>
 governor status --repo /path/to/project
@@ -125,6 +128,19 @@ governor default-enable
 This adds a marked block to `~/.codex/AGENTS.md`, merges one `PreToolUse` handler into
 `~/.codex/hooks.json`, and installs a stable local runtime under
 `~/.codex/development-governor/v0/`. It does not launch a model. Disable it with:
+
+If a newer source package is available, `default-enable` returns
+`upgrade_required` instead of silently replacing the active runtime. Upgrade only
+under an explicit external Owner reference:
+
+```bash
+governor default-upgrade \
+  --owner-authorization-ref <external-owner-reference>
+```
+
+The upgrade verifies the existing managed AGENTS/Hook projections and stable
+launcher hashes, preserves unrelated configuration, installs a content-addressed
+runtime, and writes an upgrade receipt. Disable it with:
 
 ```bash
 governor default-disable

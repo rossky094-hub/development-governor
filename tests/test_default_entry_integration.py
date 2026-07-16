@@ -3,11 +3,14 @@ import base64
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+
+from development_governor.default_activation import default_enable
 
 
 class DefaultEntryIntegrationTests(unittest.TestCase):
@@ -205,6 +208,54 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
         disabled = self.call("default-disable", "--codex-home", str(self.codex_home))
         self.assertEqual(disabled["status"], "disabled")
         self.assertFalse(self.marker.exists())
+
+    def test_cli_exposes_owner_controlled_policy_migration(self):
+        old_policy = self.policy()
+        old_path = self.root / "old-policy.json"
+        new_path = self.root / "new-policy.json"
+        old_path.write_text(json.dumps(old_policy), encoding="utf-8")
+        new_policy = self.policy()
+        new_policy["allowed_paths"] = ["src/", "README.md", "docs/"]
+        new_policy["owner_authorization_ref"] = "owner:integration/new-policy"
+        new_path.write_text(json.dumps(new_policy), encoding="utf-8")
+
+        enrolled = self.call("enroll", str(old_path))
+        migrated = self.call(
+            "migrate-policy",
+            str(new_path),
+            "--expected-policy-hash",
+            enrolled["policy_hash"],
+            "--owner-authorization-ref",
+            "owner:integration/approve-migration",
+        )
+
+        self.assertEqual(migrated["status"], "policy_migrated")
+        self.assertTrue(Path(migrated["migration_receipt"]).is_file())
+
+    def test_cli_exposes_explicit_runtime_upgrade(self):
+        source_a = self.root / "runtime-a"
+        shutil.copytree(self.project_root / "src" / "development_governor", source_a)
+        with (source_a / "cli.py").open("a", encoding="utf-8") as target:
+            target.write("\n# intentionally old integration runtime\n")
+        enabled = default_enable(
+            codex_home=self.codex_home,
+            source_package=source_a,
+            governor_repo=self.project_root,
+        )
+
+        drift = self.call("default-enable", "--codex-home", str(self.codex_home))
+        upgraded = self.call(
+            "default-upgrade",
+            "--codex-home",
+            str(self.codex_home),
+            "--owner-authorization-ref",
+            "owner:integration/approve-runtime-upgrade",
+        )
+
+        self.assertEqual(enabled["status"], "enabled")
+        self.assertEqual(drift["status"], "upgrade_required")
+        self.assertEqual(upgraded["status"], "upgraded")
+        self.assertTrue(Path(upgraded["upgrade_receipt"]).is_file())
 
 
 if __name__ == "__main__":

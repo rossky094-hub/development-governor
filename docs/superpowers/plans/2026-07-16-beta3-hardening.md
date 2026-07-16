@@ -18,11 +18,11 @@
 - Modify: `src/development_governor/public_demo.py`
 - Modify: `examples/task-capsule.example.json`
 
-- [ ] Add a failing test that supplies `evidence_inputs` as `{path, sha256}`, changes the file after `prepare`, and expects `start` to reject `evidence input hash mismatch`.
-- [ ] Run `PYTHONPATH=src python3 -m unittest tests.test_project_entry -v` and confirm the v1 capsule is rejected before implementation.
-- [ ] Change `TASK_SCHEMA` to `development-governor-task-capsule.v1`; validate non-empty file records and lowercase SHA-256; recompute the file hash at `prepare` and before `start`, check, and verify.
-- [ ] Update all built-in producers and fixtures to emit v1 evidence records.
-- [ ] Rerun the focused test and commit only after GREEN.
+- [x] Add a failing test that supplies `evidence_inputs` as `{path, sha256}`, changes the file after `prepare`, and expects `start` to reject `evidence input hash mismatch`.
+- [x] Run `PYTHONPATH=src python3 -m unittest tests.test_project_entry -v` and confirm the v1 capsule is rejected before implementation.
+- [x] Change `TASK_SCHEMA` to `development-governor-task-capsule.v1`; validate non-empty file records and lowercase SHA-256; recompute the file hash at `prepare` and before `start`, check, and verify.
+- [x] Update all built-in producers and fixtures to emit v1 evidence records.
+- [x] Rerun the focused test and commit only after GREEN.
 
 ### Task 2: Isolate verification
 
@@ -30,11 +30,11 @@
 - Modify: `src/development_governor/project_entry.py`
 - Modify: `tests/test_project_entry.py`
 
-- [ ] Add a failing acceptance fixture that overwrites `src/app.py`, creates a new file, and exits zero; assert the source repository remains unchanged.
-- [ ] Run the focused test and confirm the current implementation mutates the source repository.
-- [ ] Implement a deterministic repository snapshot containing tracked and untracked non-ignored files, excluding Git administration state; execute each acceptance in a fresh temporary snapshot.
-- [ ] Add `execution_mode: isolated_snapshot` to each result and never copy snapshot changes back.
-- [ ] Rerun the focused test and existing verification lifecycle tests.
+- [x] Add a failing acceptance fixture that overwrites `src/app.py`, creates a new file, and exits zero; assert the source repository remains unchanged.
+- [x] Run the focused test and confirm the current implementation mutates the source repository.
+- [x] Implement a deterministic repository snapshot containing tracked and untracked non-ignored files, excluding Git administration state; execute each acceptance in a fresh temporary snapshot.
+- [x] Add `execution_mode: isolated_snapshot` to each result and never copy snapshot changes back.
+- [x] Rerun the focused test and existing verification lifecycle tests.
 
 ### Task 3: Fail closed for opaque commands and add isolated checks
 
@@ -46,11 +46,11 @@
 - Modify: `tests/test_project_entry.py`
 - Modify: `tests/test_default_entry_integration.py`
 
-- [ ] Replace the existing green test for unnamed test commands with a failing expectation that active-lease opaque shell execution is denied.
-- [ ] Confirm RED against the current Hook.
-- [ ] Deny mutation-capable shell commands when no explicit path set can be established.
-- [ ] Add `run_isolated_check(repo, argv)` and CLI `governor check --repo PATH -- ARGV`; require an active lease and fresh evidence, run in a disposable snapshot, and return a receipt without closing the task.
-- [ ] Verify explicit in-scope patch/direct-path commands remain admitted.
+- [x] Replace the existing green test for unnamed test commands with a failing expectation that active-lease opaque shell execution is denied.
+- [x] Confirm RED against the current Hook.
+- [x] Deny mutation-capable shell commands when no explicit path set can be established.
+- [x] Add `run_isolated_check(repo, argv)` and CLI `governor check --repo PATH -- ARGV`; require an active lease and fresh evidence, run in a disposable snapshot, and return a receipt without closing the task.
+- [x] Verify explicit in-scope patch/direct-path commands remain admitted.
 
 ### Task 4: Align public boundary and regression
 
@@ -60,10 +60,10 @@
 - Modify: `docs/public/quickstart.md`
 - Modify: `src/development_governor/public_demo.py`
 
-- [ ] Document authority-preserving language, snapshot isolation, opaque-command denial, and the remaining OS-sandbox boundary.
-- [ ] Run the frozen external `beta3_core_acceptance.py` and require `BETA3_CORE_ACCEPTANCE=PASS`.
-- [ ] Run all unit tests with `PYTHONPATH=src`; require zero failures.
-- [ ] Commit the core slice, run `governor verify`, then `governor close` before starting operations work.
+- [x] Document authority-preserving language, snapshot isolation, opaque-command denial, and the remaining OS-sandbox boundary.
+- [x] Run the frozen external `beta3_core_acceptance.py` and require `BETA3_CORE_ACCEPTANCE=PASS`.
+- [x] Run all unit tests with `PYTHONPATH=src`; require zero failures.
+- [x] Commit the core slice, run `governor verify`, then `governor close` before starting operations work.
 
 ### Task 5: Add policy and runtime migrations
 
@@ -75,9 +75,9 @@
 - Modify: `tests/test_default_activation.py`
 - Modify: `tests/test_default_entry_integration.py`
 
-- [ ] Write failing tests for active-lease migration rejection, stale expected policy hash, immutable migration receipt, runtime drift detection, explicit upgrade, unrelated-content preservation, and managed-block tamper detection.
-- [ ] Implement `migrate-policy` with exact old hash, same project identity, Owner reference, no active lease, atomic replacement, and receipt history.
-- [ ] Implement `default-upgrade` with managed-block/Hook integrity validation, new content-addressed runtime installation, atomic manifest replacement, and history.
+- [x] Write failing tests for active-lease migration rejection, stale expected policy hash, immutable migration receipt, runtime drift detection, explicit upgrade, unrelated-content preservation, and managed-block tamper detection.
+- [x] Implement `migrate-policy` with exact old hash, same project identity, Owner reference, no active lease, atomic replacement, and receipt history.
+- [x] Implement `default-upgrade` with managed-block/Hook integrity validation, new content-addressed runtime installation, atomic manifest replacement, and history.
 - [ ] Run frozen `beta3_ops_acceptance.py` and full regression; close the operations lease.
 
 ### Task 6: Refactor and create Skills one at a time

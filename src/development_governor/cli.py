@@ -30,6 +30,7 @@ from development_governor.default_activation import (
     ActivationError,
     default_disable,
     default_enable,
+    default_upgrade,
 )
 from development_governor.hook_guard import hook_main
 from development_governor.project_entry import (
@@ -37,6 +38,7 @@ from development_governor.project_entry import (
     ProjectEntryError,
     close_task,
     enroll_project,
+    migrate_project_policy,
     prepare_task,
     project_status,
     run_isolated_check,
@@ -129,6 +131,14 @@ def main(argv=None) -> int:
     enroll.add_argument("policy", nargs="?", help="policy JSON path, or - for stdin")
     enroll.add_argument("--json-base64", help="URL-safe base64 policy JSON")
 
+    migrate = subparsers.add_parser(
+        "migrate-policy", help="replace an enrolled policy under exact Owner authority"
+    )
+    migrate.add_argument("policy", nargs="?", help="replacement policy JSON path, or - for stdin")
+    migrate.add_argument("--json-base64", help="URL-safe base64 replacement policy JSON")
+    migrate.add_argument("--expected-policy-hash", required=True)
+    migrate.add_argument("--owner-authorization-ref", required=True)
+
     prepare = subparsers.add_parser(
         "prepare", help="freeze one task capsule without issuing a lease"
     )
@@ -168,6 +178,13 @@ def main(argv=None) -> int:
     disable.add_argument("--codex-home")
     disable.add_argument("--restore-backup", action="store_true")
 
+    upgrade = subparsers.add_parser(
+        "default-upgrade", help="upgrade the default runtime under explicit Owner authority"
+    )
+    upgrade.add_argument("--codex-home")
+    upgrade.add_argument("--governor-repo")
+    upgrade.add_argument("--owner-authorization-ref", required=True)
+
     subparsers.add_parser("hook-guard", help="evaluate one PreToolUse event from stdin")
     subparsers.add_parser("demo", help="run a self-contained zero-model control demo")
 
@@ -180,6 +197,13 @@ def main(argv=None) -> int:
         elif args.command == "enroll":
             payload = enroll_project(
                 _json_source(args.policy, args.json_base64),
+                state_root=DEFAULT_STATE_ROOT,
+            )
+        elif args.command == "migrate-policy":
+            payload = migrate_project_policy(
+                _json_source(args.policy, args.json_base64),
+                expected_policy_hash=args.expected_policy_hash,
+                owner_authorization_ref=args.owner_authorization_ref,
                 state_root=DEFAULT_STATE_ROOT,
             )
         elif args.command == "prepare":
@@ -223,6 +247,18 @@ def main(argv=None) -> int:
             payload = default_disable(
                 codex_home=_codex_home(args.codex_home),
                 restore_backup=args.restore_backup,
+            )
+        elif args.command == "default-upgrade":
+            module_path = Path(__file__).resolve()
+            inferred_repo = module_path.parents[2]
+            governor_repo = Path(args.governor_repo).expanduser() if args.governor_repo else None
+            if governor_repo is None and (inferred_repo / ".git").exists():
+                governor_repo = inferred_repo
+            payload = default_upgrade(
+                codex_home=_codex_home(args.codex_home),
+                source_package=module_path.parent,
+                governor_repo=governor_repo,
+                owner_authorization_ref=args.owner_authorization_ref,
             )
         elif args.command == "stage-skill":
             payload = stage_skill_candidate(

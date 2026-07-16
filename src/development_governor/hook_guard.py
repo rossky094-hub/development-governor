@@ -20,6 +20,7 @@ _READ_ONLY_PROGRAMS = {"pwd", "ls", "rg", "grep", "stat", "head", "tail", "wc", 
 _READ_ONLY_GIT = {"status", "diff", "show", "log", "rev-parse", "branch", "ls-files", "worktree"}
 _GOVERNOR_COMMANDS = {
     "enroll",
+    "migrate-policy",
     "prepare",
     "start",
     "status",
@@ -28,6 +29,7 @@ _GOVERNOR_COMMANDS = {
     "close",
     "default-enable",
     "default-disable",
+    "default-upgrade",
     "hook-guard",
 }
 _SHELL_TOOL_NAMES = {"bash", "shell", "exec_command", "unified_exec", "functions.exec"}

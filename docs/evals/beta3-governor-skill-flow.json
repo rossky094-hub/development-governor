@@ -1,0 +1,95 @@
+{
+  "schema_version": "development-governor.beta3-skill-flow.v0",
+  "simulation_only": true,
+  "frozen_candidate": {
+    "sha256": "8278fe7db92b9b7a7db1d1f09223890c8e3ab61b7fe3e53d53f14e908790c67e",
+    "spec": {
+      "acceptance": {
+        "negative_case": "An invalid or missing release receipt cannot produce public status",
+        "observation": "A frozen fixture verifies one exact internal release-status transition"
+      },
+      "constraints": [
+        "No public status without a content-bound release receipt",
+        "No implementation authorization may be inferred from review"
+      ],
+      "contract_graph": {
+        "edges": [
+          {
+            "from": "release-receipt",
+            "relation": "authorizes-observation",
+            "to": "release-status"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "release-receipt",
+            "type": "evidence"
+          },
+          {
+            "id": "release-status",
+            "type": "capability"
+          }
+        ]
+      },
+      "parent_baseline": {
+        "hash": "9b8f4e86b3d7d0f736eb66e5fb704c230a729f085af8f969e773dcbc3673417e",
+        "id": "fixture-release-policy-v1"
+      },
+      "result": {
+        "after": "The fixture exposes one receipt-bound internal release status",
+        "before": "The fixture has no receipt-bound release status"
+      },
+      "scope_ids": [
+        "fixture:release-status"
+      ],
+      "witnesses": {
+        "bypass": "A status string without the receipt hash is rejected",
+        "failure_recovery": "Missing evidence leaves status unavailable and requires a new receipt",
+        "success": "The exact frozen receipt produces the expected internal status"
+      }
+    }
+  },
+  "authoring": {
+    "candidate_hash": "8278fe7db92b9b7a7db1d1f09223890c8e3ab61b7fe3e53d53f14e908790c67e",
+    "draft_status": "ready_to_freeze",
+    "operational_authority": false
+  },
+  "drift_analysis": {
+    "analysis_status": "findings_complete",
+    "candidate_hash": "8278fe7db92b9b7a7db1d1f09223890c8e3ab61b7fe3e53d53f14e908790c67e",
+    "findings": [],
+    "operational_authority": false,
+    "safe_work_remaining_scope_ids": [
+      "fixture:release-status"
+    ]
+  },
+  "bounded_review": {
+    "acceptance_target_scope_ids": [
+      "fixture:release-status"
+    ],
+    "batch_id": "fixture-beta3-e2e-001",
+    "candidate_hash": "8278fe7db92b9b7a7db1d1f09223890c8e3ab61b7fe3e53d53f14e908790c67e",
+    "owner_review_authorization_ref": "fixture-only:not-real-owner-authority",
+    "review_budget_reservation_ref": "fixture-only:one-review-credit",
+    "verdict": "accepted_for_owner_review"
+  },
+  "owner_decision": {
+    "implementation_authorized": false,
+    "status": "pending_not_simulated"
+  },
+  "implementation_capsule": {
+    "separate_from_spec_lease": true,
+    "start_requested": false,
+    "status": "prepared_in_disposable_acceptance_state"
+  },
+  "product_mutation_executed": false,
+  "can_claim": [
+    "The three Skill roles retain separate output authority",
+    "A separate Governor capsule can prepare without starting a lease"
+  ],
+  "cannot_claim": [
+    "real Owner acceptance",
+    "semantic correctness on an external project",
+    "production readiness"
+  ]
+}

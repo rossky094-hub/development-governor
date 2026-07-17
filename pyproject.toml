@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "development-governor"
-version = "0.1.0b2"
+version = "0.1.0b3"
 description = "A deterministic control layer for bounded Codex development runs"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -1,5 +1,5 @@
 {
-  "schema_version": "development-governor-task-capsule.v0",
+  "schema_version": "development-governor-task-capsule.v1",
   "repo_path": "/absolute/path/to/your-project",
   "owner_request_ref": "owner:request/replace-with-real-reference",
   "result": "Deliver one observable, bounded product capability.",
@@ -8,8 +8,14 @@
     "Do not claim completion before frozen verification passes."
   ],
   "evidence_inputs": [
-    "README.md",
-    "acceptance/run_tests.py"
+    {
+      "path": "README.md",
+      "sha256": "replace-with-lowercase-sha256"
+    },
+    {
+      "path": "acceptance/run_tests.py",
+      "sha256": "replace-with-lowercase-sha256"
+    }
   ],
   "acceptance_ids": [
     "unit-tests"

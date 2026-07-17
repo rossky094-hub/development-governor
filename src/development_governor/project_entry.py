@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import subprocess
 import tempfile
 import time
@@ -19,7 +20,7 @@ DEFAULT_STATE_ROOT = Path(
     )
 ).expanduser()
 POLICY_SCHEMA = "development-governor-project-policy.v0"
-TASK_SCHEMA = "development-governor-task-capsule.v0"
+TASK_SCHEMA = "development-governor-task-capsule.v1"
 
 
 class ProjectEntryError(ValueError):
@@ -45,6 +46,12 @@ def _file_sha256(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _path_set_hash(root: Path, paths: Sequence[str]) -> str:
+    from development_governor.runner import hash_path_set
+
+    return hash_path_set(root, paths)
 
 
 def _load_json(path: Path) -> Mapping[str, Any]:
@@ -107,6 +114,89 @@ def _string_array(value: Any, label: str, *, allow_empty: bool = False) -> Tuple
     if len(result) != len(set(result)):
         raise ProjectEntryError(f"{label} entries must be unique")
     return result
+
+
+def _validated_evidence_inputs(value: Any, repo: Path) -> Tuple[Mapping[str, str], ...]:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ProjectEntryError("evidence_inputs must be a non-empty array")
+    records = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ProjectEntryError("evidence input must be an object")
+        _require_exact_keys(item, {"path", "sha256"}, "evidence input")
+        path = _relative_path(item["path"], "evidence inputs")
+        digest = _nonempty_string(item["sha256"], "evidence input sha256")
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ProjectEntryError(
+                "evidence input sha256 must be lowercase hexadecimal"
+            )
+        if path in seen:
+            raise ProjectEntryError("evidence input paths must be unique")
+        seen.add(path)
+        actual = repo / path
+        if not actual.is_file() or _file_sha256(actual) != digest:
+            raise ProjectEntryError("evidence input hash mismatch: " + path)
+        records.append({"path": path, "sha256": digest})
+    return tuple(records)
+
+
+def _verify_evidence_inputs(task: Mapping[str, Any]) -> None:
+    repo = Path(task["project_identity"]["repo_path"])
+    for item in task["evidence_inputs"]:
+        path = repo / item["path"]
+        if not path.is_file() or _file_sha256(path) != item["sha256"]:
+            raise ProjectEntryError("evidence input hash mismatch: " + item["path"])
+
+
+@contextmanager
+def _isolated_repository_snapshot(repo_path: Path):
+    repo = Path(repo_path).resolve()
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        shell=False,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ProjectEntryError("cannot enumerate repository snapshot")
+    raw_paths = [item for item in completed.stdout.split(b"\0") if item]
+    with tempfile.TemporaryDirectory(prefix="development-governor-snapshot-") as directory:
+        snapshot = Path(directory) / "repo"
+        snapshot.mkdir()
+        for raw_path in raw_paths:
+            relative = _relative_path(os.fsdecode(raw_path), "repository snapshot")
+            source = repo / relative
+            if not source.exists() and not source.is_symlink():
+                continue
+            target = snapshot / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_symlink():
+                try:
+                    source.resolve().relative_to(repo)
+                except ValueError as error:
+                    raise ProjectEntryError(
+                        "repository snapshot contains an escaping symlink: " + relative
+                    ) from error
+                target.symlink_to(os.readlink(source))
+            elif source.is_file():
+                shutil.copy2(source, target)
+            else:
+                raise ProjectEntryError(
+                    "repository snapshot supports files only: " + relative
+                )
+        yield snapshot
 
 
 def _path_matches(path: str, prefix: str) -> bool:
@@ -344,6 +434,80 @@ def enroll_project(policy_source: Any, *, state_root: Path = DEFAULT_STATE_ROOT)
     }
 
 
+def migrate_project_policy(
+    policy_source: Any,
+    *,
+    expected_policy_hash: str,
+    owner_authorization_ref: str,
+    state_root: Path = DEFAULT_STATE_ROOT,
+    now=None,
+) -> Mapping[str, Any]:
+    """Replace one enrolled policy under an exact Owner-authorized hash transition."""
+
+    expected = _nonempty_string(expected_policy_hash, "expected policy hash")
+    if len(expected) != 64 or any(
+        character not in "0123456789abcdef" for character in expected
+    ):
+        raise ProjectEntryError("expected policy hash must be lowercase hexadecimal")
+    owner_ref = _nonempty_string(
+        owner_authorization_ref, "owner_authorization_ref"
+    )
+    replacement = _validated_policy(_load_source(policy_source))
+    project_id = replacement["project_identity"]["project_id"]
+    new_policy_hash = _sha256(replacement)
+    timestamp = _clock_value(now)
+    with _project_lock(state_root, project_id) as directory:
+        policy_path = directory / "policy.json"
+        if not policy_path.is_file():
+            raise ProjectEntryError("needs_owner_enrollment")
+        enrolled = _load_json(policy_path)
+        if set(enrolled) != {"policy_hash", "policy"}:
+            raise ProjectEntryError("invalid enrolled project policy")
+        current_policy_hash = enrolled["policy_hash"]
+        if current_policy_hash != expected:
+            raise ProjectEntryError("expected policy hash does not match current policy")
+        if _sha256(enrolled["policy"]) != current_policy_hash:
+            raise ProjectEntryError("enrolled project policy hash mismatch")
+        if directory.joinpath("active-lease.json").exists():
+            raise ProjectEntryError("policy migration requires no active lease")
+        if new_policy_hash == current_policy_hash:
+            raise ProjectEntryError("replacement policy is unchanged")
+        history_path = directory / "policy-history" / (current_policy_hash + ".json")
+        if history_path.exists() and _load_json(history_path) != enrolled:
+            raise ProjectEntryError("policy history hash collision")
+        _atomic_json(history_path, enrolled)
+        receipt = {
+            "schema_version": "development-governor-policy-migration-receipt.v0",
+            "project_id": project_id,
+            "old_policy_hash": current_policy_hash,
+            "new_policy_hash": new_policy_hash,
+            "owner_authorization_ref": owner_ref,
+            "migrated_at": timestamp,
+            "old_policy_history": str(history_path),
+        }
+        receipt_path = directory / "policy-migrations" / (
+            f"{int(timestamp * 1000000)}-{new_policy_hash}.json"
+        )
+        try:
+            _atomic_json(
+                policy_path,
+                {"policy_hash": new_policy_hash, "policy": replacement},
+            )
+            _atomic_json(receipt_path, receipt)
+        except BaseException:
+            _atomic_json(policy_path, enrolled)
+            if receipt_path.exists():
+                receipt_path.unlink()
+            raise
+    return {
+        "status": "policy_migrated",
+        "project_id": project_id,
+        "old_policy_hash": current_policy_hash,
+        "new_policy_hash": new_policy_hash,
+        "migration_receipt": str(receipt_path),
+    }
+
+
 def _load_enrollment(identity: Mapping[str, str], state_root: Path) -> Tuple[Path, Mapping[str, Any]]:
     directory = _project_dir(state_root, identity["project_id"])
     policy_path = directory / "policy.json"
@@ -381,10 +545,7 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         raise ProjectEntryError("task capsule repository is not the enrolled project")
     result = _nonempty_string(raw["result"], "result")
     constraints = _string_array(raw["constraints"], "constraints")
-    evidence = _path_array(raw["evidence_inputs"], "evidence_inputs")
-    for path in evidence:
-        if not (Path(identity["repo_path"]) / path.rstrip("/")).exists():
-            raise ProjectEntryError(f"evidence input does not exist: {path}")
+    evidence = _validated_evidence_inputs(raw["evidence_inputs"], Path(identity["repo_path"]))
     acceptance_ids = _string_array(raw["acceptance_ids"], "acceptance_ids")
     known_acceptance = {
         item["acceptance_id"] for item in policy["acceptance_definitions"]
@@ -452,9 +613,12 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         "owner_request_ref": _nonempty_string(raw["owner_request_ref"], "owner_request_ref"),
         "result": result,
         "constraints": list(constraints),
-        "evidence_inputs": list(evidence),
+        "evidence_inputs": [dict(item) for item in evidence],
         "acceptance_ids": list(acceptance_ids),
         "deliverable_paths": list(deliverables),
+        "baseline_product_tree_hash": _path_set_hash(
+            Path(identity["repo_path"]), deliverables
+        ),
         "limits": limits,
         "lanes": lanes,
     }
@@ -590,6 +754,7 @@ def start_task(task_ref: str, *, state_root: Path = DEFAULT_STATE_ROOT, now=None
         _, enrolled = _load_enrollment(task["project_identity"], state_root)
         if enrolled["policy_hash"] != task["policy_hash"]:
             raise ProjectEntryError("prepared task policy hash mismatch")
+        _verify_evidence_inputs(task)
         task_path = task_dir / "task.json"
         if not task_path.is_file() or _sha256(_load_json(task_path)) != task_hash:
             raise ProjectEntryError("prepared task hash mismatch")
@@ -736,8 +901,48 @@ def authorize_mutation(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT
     }
 
 
-def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=None) -> Mapping[str, Any]:
-    """Run only the acceptance commands frozen by project enrollment."""
+def _run_snapshot_command(
+    repo_path: Path, argv: Sequence[str], *, timeout: float
+) -> Mapping[str, Any]:
+    if not isinstance(argv, (list, tuple)) or not argv or any(
+        not isinstance(part, str) or not part for part in argv
+    ):
+        raise ProjectEntryError("isolated command argv must be a non-empty string array")
+    with _isolated_repository_snapshot(repo_path) as snapshot:
+        try:
+            completed = subprocess.run(
+                list(argv),
+                cwd=snapshot,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return {
+                "returncode": completed.returncode,
+                "stdout": completed.stdout[-20000:],
+                "stderr": completed.stderr[-20000:],
+                "execution_mode": "isolated_snapshot",
+            }
+        except subprocess.TimeoutExpired as error:
+            return {
+                "returncode": None,
+                "stdout": (error.stdout or "")[-20000:]
+                if isinstance(error.stdout, str)
+                else "",
+                "stderr": "isolated command timed out",
+                "execution_mode": "isolated_snapshot",
+            }
+
+
+def run_isolated_check(
+    repo_path: Path,
+    argv: Sequence[str],
+    *,
+    state_root: Path = DEFAULT_STATE_ROOT,
+    now=None,
+) -> Mapping[str, Any]:
+    """Run a non-promoting check in a disposable repository snapshot."""
 
     decision = authorize_mutation(repo_path, state_root=state_root, now=now)
     if not decision["allowed"]:
@@ -746,6 +951,39 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
     directory, enrolled = _load_enrollment(identity, state_root)
     task_dir = directory / "tasks" / decision["task_hash"]
     task = _load_json(task_dir / "task.json")
+    _verify_evidence_inputs(task)
+    timestamp = _clock_value(now)
+    remaining = max(1.0, float(decision["expires_at"]) - timestamp)
+    result = _run_snapshot_command(
+        Path(identity["repo_path"]), argv, timeout=min(300.0, remaining)
+    )
+    receipt = {
+        "schema_version": "development-governor-isolated-check-receipt.v0",
+        "project_id": identity["project_id"],
+        "policy_hash": enrolled["policy_hash"],
+        "task_hash": decision["task_hash"],
+        "lease_id": decision["lease_id"],
+        "checked_at": timestamp,
+        "argv": list(argv),
+        "status": "check_passed" if result["returncode"] == 0 else "check_failed",
+        **result,
+    }
+    receipt_path = task_dir / "checks" / (_sha256(receipt) + ".json")
+    _atomic_json(receipt_path, receipt)
+    return {**receipt, "receipt_path": str(receipt_path)}
+
+
+def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=None) -> Mapping[str, Any]:
+    """Run frozen acceptance commands in disposable repository snapshots."""
+
+    decision = authorize_mutation(repo_path, state_root=state_root, now=now)
+    if not decision["allowed"]:
+        raise ProjectEntryError("mutation lease not active: " + decision["reason"])
+    identity = canonical_project_identity(repo_path)
+    directory, enrolled = _load_enrollment(identity, state_root)
+    task_dir = directory / "tasks" / decision["task_hash"]
+    task = _load_json(task_dir / "task.json")
+    _verify_evidence_inputs(task)
     definitions = {
         item["acceptance_id"]: item
         for item in enrolled["policy"]["acceptance_definitions"]
@@ -761,31 +999,21 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
                     "acceptance file hash mismatch: " + frozen["path"]
                 )
         remaining = max(1.0, float(decision["expires_at"]) - _clock_value(now))
-        try:
-            completed = subprocess.run(
-                list(definition["argv"]),
-                cwd=identity["repo_path"],
-                shell=False,
-                capture_output=True,
-                text=True,
+        result = {
+            "acceptance_id": acceptance_id,
+            **_run_snapshot_command(
+                Path(identity["repo_path"]),
+                definition["argv"],
                 timeout=min(300.0, remaining),
-            )
-            result = {
-                "acceptance_id": acceptance_id,
-                "returncode": completed.returncode,
-                "stdout": completed.stdout[-20000:],
-                "stderr": completed.stderr[-20000:],
-            }
-        except subprocess.TimeoutExpired as error:
-            result = {
-                "acceptance_id": acceptance_id,
-                "returncode": None,
-                "stdout": (error.stdout or "")[-20000:] if isinstance(error.stdout, str) else "",
-                "stderr": "acceptance command timed out",
-            }
+            ),
+        }
         results.append(result)
         all_passed = all_passed and result["returncode"] == 0
     timestamp = _clock_value(now)
+    final_product_tree_hash = _path_set_hash(
+        Path(identity["repo_path"]), task["deliverable_paths"]
+    )
+    baseline_product_tree_hash = task.get("baseline_product_tree_hash")
     receipt = {
         "schema_version": "development-governor-verification-receipt.v0",
         "project_id": identity["project_id"],
@@ -794,6 +1022,16 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
         "lease_id": decision["lease_id"],
         "verified_at": timestamp,
         "status": "verification_passed" if all_passed else "verification_failed",
+        "product_evidence": (
+            isinstance(baseline_product_tree_hash, str)
+            and baseline_product_tree_hash != final_product_tree_hash
+        ),
+        "repository": {
+            "path": identity["repo_path"],
+            "product_paths": list(task["deliverable_paths"]),
+            "baseline_product_tree_hash": baseline_product_tree_hash,
+            "final_product_tree_hash": final_product_tree_hash,
+        },
         "results": results,
     }
     receipt_path = task_dir / "verifications" / (f"{int(timestamp * 1000000)}.json")

@@ -20,13 +20,16 @@ _READ_ONLY_PROGRAMS = {"pwd", "ls", "rg", "grep", "stat", "head", "tail", "wc", 
 _READ_ONLY_GIT = {"status", "diff", "show", "log", "rev-parse", "branch", "ls-files", "worktree"}
 _GOVERNOR_COMMANDS = {
     "enroll",
+    "migrate-policy",
     "prepare",
     "start",
     "status",
+    "check",
     "verify",
     "close",
     "default-enable",
     "default-disable",
+    "default-upgrade",
     "hook-guard",
 }
 _SHELL_TOOL_NAMES = {"bash", "shell", "exec_command", "unified_exec", "functions.exec"}
@@ -221,6 +224,11 @@ def _scope_denial(
     paths = _patch_paths(source, repo) if patch_capable else _explicit_shell_paths(source, repo)
     if patch_capable and not paths:
         return "Governor could not establish patch paths inside the active task scope."
+    if normalized_name in _SHELL_TOOL_NAMES and not patch_capable and not paths:
+        return (
+            "Opaque shell command has no provable write set; run it through the "
+            "Governor isolated check entry."
+        )
     allowed = tuple(decision.get("allowed_paths", ()))
     protected = tuple(decision.get("protected_paths", ()))
     for path in paths:

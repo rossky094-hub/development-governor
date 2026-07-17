@@ -45,7 +45,9 @@ Copy `examples/task-capsule.example.json` outside the project. State one observa
 result, only its constraints and evidence inputs, exact deliverable paths, existing
 acceptance IDs, and smaller or equal limits. Every evidence input is an immutable file
 record with its current lowercase SHA-256. Represent a directory with a separately
-hash-bound manifest file; do not submit a mutable directory path as evidence.
+hash-bound manifest file; do not submit a mutable directory path as evidence. Evidence
+inputs and deliverable paths must be path-disjoint, including directory ancestors. A
+file expected to change belongs only in `deliverable_paths`, never in `evidence_inputs`.
 
 For a serial slice use `lanes: []` and set both agent limits to 1. For parallel work,
 declare at least two lanes; every lane must own disjoint deliverable paths and disjoint

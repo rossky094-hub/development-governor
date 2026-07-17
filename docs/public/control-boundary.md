@@ -8,26 +8,42 @@
   against the enrolled policy.
 - Task deliverables must remain under enrolled allowed paths and outside protected
   paths.
+- Task evidence is stored as `{path, sha256}` and rechecked before lease activation,
+  isolated checks, and verification.
 - Verification resolves only pre-enrolled acceptance IDs, rechecks declared file
-  hashes, and executes argv arrays with `shell=False`.
+  hashes, and executes argv arrays with `shell=False` in fresh disposable snapshots.
 - A verified task closes; an explicit Owner abort records a distinct terminal state.
+- Policy replacement requires the exact enrolled policy hash, the same Git identity,
+  an external Owner reference, no active lease, and a migration receipt.
+- Default-runtime replacement is explicit: managed AGENTS/Hook projections and stable
+  launcher hashes are checked before a content-addressed upgrade is installed and
+  recorded. Unrelated configuration is outside the managed projection.
 - The supported Codex `PreToolUse` Hook denies recognizable mutations without a valid
-  lease and rejects recognizable paths outside the task scope.
+  lease, rejects recognizable paths outside the task scope, and fails closed for an
+  active-lease shell command whose write set cannot be established. Such commands may
+  use the isolated, non-promoting `governor check` entry.
 
 ## Intentionally not claimed
 
 The Hook is not a mandatory access-control system. It cannot intercept all macOS or
 Linux writes, manual editor changes, other agents or applications, an MCP server that
 does not pass through the Hook, or a future Codex mutation surface the parser does not
-recognize. Ambiguous Hook input fails open with a diagnostic to avoid pretending that
-an unevaluated action was securely blocked.
+recognize. Malformed Hook envelopes still return a diagnostic rather than pretending
+that an event was securely evaluated. An opaque command recognized as mutation-capable
+is denied, but parsing is not an operating-system security boundary.
+
+The disposable snapshot is not a container or mandatory access-control sandbox. It
+prevents ordinary relative writes by changing the command working tree and never
+copying results back. Code that deliberately writes to unrelated absolute host paths
+still requires a VM, container, or OS sandbox.
 
 The root-run supervisor can terminate its process group after a deterministic limit,
 but it cannot recover compute already spent or prove that work was valuable. Observed
 token limits only apply when unambiguous telemetry is present; unavailable telemetry
 does not become an estimated cost signal.
 
-The Governor separates authority and evidence. It cannot determine whether the Owner
+The Governor preserves authority references but does not authenticate their principals.
+It separates authority and evidence, and cannot determine whether the Owner
 chose the right outcome, whether the acceptance test encodes the right product value,
 or whether a malicious acceptance program is safe to execute. Run untrusted code in a
 real sandbox or disposable environment.

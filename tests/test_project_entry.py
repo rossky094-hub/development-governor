@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from development_governor.project_entry import (
     ProjectEntryError,
@@ -101,12 +102,15 @@ class ProjectEntryTests(unittest.TestCase):
 
     def capsule(self, **overrides):
         raw = {
-            "schema_version": "development-governor-task-capsule.v0",
+            "schema_version": "development-governor-task-capsule.v1",
             "repo_path": str(self.repo),
             "owner_request_ref": "codex:user-turn/test-task",
             "result": "Deliver one working product slice",
             "constraints": ["Do not edit acceptance files"],
-            "evidence_inputs": ["README.md", "src/app.py"],
+            "evidence_inputs": [
+                {"path": "README.md", "sha256": self.digest("README.md")},
+                {"path": "src/app.py", "sha256": self.digest("src/app.py")},
+            ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],
             "limits": {
@@ -150,6 +154,78 @@ class ProjectEntryTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectEntryError, "conflicting enrolled policy"):
             enroll_project(changed_path, state_root=self.state_root)
 
+    def test_policy_migration_requires_no_lease_exact_hash_and_owner_reference(self):
+        from development_governor.project_entry import migrate_project_policy
+
+        enrolled = self.enroll()
+        replacement = self.policy(allowed_paths=["src/", "docs/"])
+        replacement_path = self.root / "replacement-policy.json"
+        self.write_json(replacement_path, replacement)
+        prepared = self.prepare()
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+
+        with self.assertRaisesRegex(ProjectEntryError, "active lease"):
+            migrate_project_policy(
+                replacement_path,
+                expected_policy_hash=enrolled["policy_hash"],
+                owner_authorization_ref="owner:approve-migration",
+                state_root=self.state_root,
+                now=101.0,
+            )
+
+        close_task(
+            self.repo,
+            state_root=self.state_root,
+            owner_abort_reason="Owner ended migration fixture",
+            now=102.0,
+        )
+        migrated = migrate_project_policy(
+            replacement_path,
+            expected_policy_hash=enrolled["policy_hash"],
+            owner_authorization_ref="owner:approve-migration",
+            state_root=self.state_root,
+            now=103.0,
+        )
+
+        self.assertEqual(migrated["status"], "policy_migrated")
+        self.assertTrue(Path(migrated["migration_receipt"]).is_file())
+        self.assertNotEqual(migrated["new_policy_hash"], enrolled["policy_hash"])
+        with self.assertRaisesRegex(ProjectEntryError, "expected policy hash"):
+            migrate_project_policy(
+                self.policy_path,
+                expected_policy_hash=enrolled["policy_hash"],
+                owner_authorization_ref="owner:stale-migration",
+                state_root=self.state_root,
+                now=104.0,
+            )
+
+    def test_policy_migration_rolls_back_when_receipt_write_fails(self):
+        from development_governor import project_entry
+        from development_governor.project_entry import migrate_project_policy
+
+        enrolled = self.enroll()
+        replacement = self.policy(allowed_paths=["src/", "docs/"])
+        replacement_path = self.root / "replacement-policy.json"
+        self.write_json(replacement_path, replacement)
+        real_atomic_json = project_entry._atomic_json
+
+        def fail_receipt(path, payload):
+            if "policy-migrations" in Path(path).parts:
+                raise OSError("simulated receipt failure")
+            return real_atomic_json(path, payload)
+
+        with mock.patch.object(project_entry, "_atomic_json", side_effect=fail_receipt):
+            with self.assertRaisesRegex(OSError, "simulated receipt failure"):
+                migrate_project_policy(
+                    replacement_path,
+                    expected_policy_hash=enrolled["policy_hash"],
+                    owner_authorization_ref="owner:rollback-migration",
+                    state_root=self.state_root,
+                    now=105.0,
+                )
+
+        self.assertEqual(self.enroll()["status"], "already_enrolled")
+
     def test_linked_worktrees_share_the_git_common_dir_project_identity(self):
         linked = self.root / "linked"
         subprocess.run(
@@ -179,6 +255,29 @@ class ProjectEntryTests(unittest.TestCase):
         self.assertTrue(Path(prepared["task_path"]).is_file())
         self.assertEqual(status["lease_status"], "none")
         self.assertEqual(len(prepared["task_hash"]), 64)
+
+    def test_evidence_content_hash_is_bound_and_rechecked_before_start(self):
+        self.enroll()
+        raw = self.capsule(
+            schema_version="development-governor-task-capsule.v1",
+            evidence_inputs=[
+                {"path": "README.md", "sha256": self.digest("README.md")}
+            ],
+        )
+        first_path = self.root / "content-bound-task.json"
+        self.write_json(first_path, raw)
+        first = prepare_task(first_path, state_root=self.state_root)
+
+        (self.repo / "README.md").write_text("changed evidence\n", encoding="utf-8")
+        with self.assertRaisesRegex(ProjectEntryError, "evidence input hash mismatch"):
+            start_task(first["task_hash"], state_root=self.state_root)
+
+        raw["evidence_inputs"][0]["sha256"] = self.digest("README.md")
+        second_path = self.root / "updated-content-bound-task.json"
+        self.write_json(second_path, raw)
+        second = prepare_task(second_path, state_root=self.state_root)
+
+        self.assertNotEqual(first["task_hash"], second["task_hash"])
 
     def test_prepare_rejects_incomplete_unknown_and_over_budget_capsules(self):
         self.enroll()
@@ -294,6 +393,50 @@ class ProjectEntryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ProjectEntryError, "acceptance file hash mismatch"):
             verify_task(self.repo, state_root=self.state_root, now=101.0)
+
+    def test_verification_runs_in_snapshot_without_mutating_source_repository(self):
+        (self.repo / "acceptance" / "verify.py").write_text(
+            "from pathlib import Path\n"
+            "Path('src/app.py').write_text('MUTATED\\n', encoding='utf-8')\n"
+            "Path('created-by-acceptance.txt').write_text('created\\n', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        self.write_json(self.policy_path, self.policy())
+        original = (self.repo / "src" / "app.py").read_bytes()
+        prepared = self.prepare()
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+
+        result = verify_task(self.repo, state_root=self.state_root, now=101.0)
+
+        self.assertEqual(result["status"], "verification_passed")
+        self.assertEqual(result["results"][0]["execution_mode"], "isolated_snapshot")
+        self.assertEqual((self.repo / "src" / "app.py").read_bytes(), original)
+        self.assertFalse((self.repo / "created-by-acceptance.txt").exists())
+
+    def test_verification_receipt_binds_baseline_and_final_deliverable_trees(self):
+        prepared = self.prepare(
+            evidence_inputs=[
+                {"path": "README.md", "sha256": self.digest("README.md")}
+            ]
+        )
+        task = json.loads(Path(prepared["task_path"]).read_text(encoding="utf-8"))
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = verify_task(self.repo, state_root=self.state_root, now=101.0)
+        receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+
+        self.assertEqual(receipt["repository"]["path"], str(self.repo.resolve()))
+        self.assertEqual(receipt["repository"]["product_paths"], ["src/"])
+        self.assertEqual(
+            receipt["repository"]["baseline_product_tree_hash"],
+            task["baseline_product_tree_hash"],
+        )
+        self.assertNotEqual(
+            receipt["repository"]["baseline_product_tree_hash"],
+            receipt["repository"]["final_product_tree_hash"],
+        )
+        self.assertTrue(receipt["product_evidence"])
 
     def test_unverified_task_requires_explicit_owner_abort_to_close(self):
         prepared = self.prepare()

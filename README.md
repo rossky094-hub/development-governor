@@ -22,7 +22,7 @@ product evidence.
 Requires Python 3.9+ and Git.
 
 ```bash
-pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.2
+pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
 governor demo
 ```
 
@@ -30,7 +30,7 @@ governor demo
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.2
+.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
 .venv/bin/governor demo
 ```
 
@@ -65,16 +65,20 @@ The canonical project route is:
 
 ```bash
 governor enroll /outside/project-policy.json
+governor migrate-policy /outside/replacement-policy.json \
+  --expected-policy-hash <current-policy-hash> \
+  --owner-authorization-ref <external-owner-reference>
 governor prepare /outside/task-capsule.json
 governor start <task-hash>
 governor status --repo /path/to/project
+governor check --repo /path/to/project -- python3 -m unittest -q
 governor verify --repo /path/to/project
 governor close --repo /path/to/project
 ```
 
 Policies and task capsules are stored outside the governed repository. Acceptance
-commands are argv arrays executed with `shell=False`; declared acceptance files are
-hash checked before verification.
+commands are argv arrays executed with `shell=False` in disposable repository
+snapshots; declared acceptance files and task evidence inputs are content-hash checked.
 
 See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 [policy](examples/project-policy.example.json) and
@@ -85,7 +89,9 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 - External, append-only project policy and task state.
 - A bounded lease before supported Codex mutation paths may write.
 - Exact deliverable paths and protected acceptance material.
-- Frozen acceptance IDs, commands, and file hashes.
+- Frozen acceptance IDs, commands, file hashes, and content-bound evidence inputs.
+- Fail-closed handling for opaque shell commands plus a non-promoting isolated check
+  entry for tests and other commands whose write set cannot be inferred.
 - Attempts, elapsed time, review waves, and declared agent limits.
 - Serial TDD slices with no extra probe/reviewer lanes.
 - Native multi-agent work when two or more lanes have disjoint deliverables and
@@ -99,14 +105,19 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 - The Codex `PreToolUse` Hook covers supported, recognizable mutation paths; manual
   edits, other applications, unhooked MCP tools, and future Codex behavior may bypass
   it.
+- Snapshot execution protects the governed repository from ordinary relative writes;
+  it does not confine malicious absolute writes to unrelated host paths.
 - It cannot guarantee that a specification is correct or that an accepted change is
   useful.
+- Owner references are preserved and audited but not cryptographically authenticated.
 - Token telemetry is optional and may be unavailable. This beta makes no measured
   cost-saving, quality-improvement, or productivity claim.
 - It does not make every task single-agent. Parallelism is admitted by independently
   verifiable lanes, not disabled globally.
 
 Read the full [control boundary and threat model](docs/public/control-boundary.md).
+The separate [Governor / Skill responsibility contract](docs/public/governor-skill-responsibility-contract.md)
+defines why semantic authoring and review Skills never acquire leases or Owner authority.
 
 ## Optional default Codex entry
 
@@ -120,13 +131,26 @@ This adds a marked block to `~/.codex/AGENTS.md`, merges one `PreToolUse` handle
 `~/.codex/hooks.json`, and installs a stable local runtime under
 `~/.codex/development-governor/v0/`. It does not launch a model. Disable it with:
 
+If a newer source package is available, `default-enable` returns
+`upgrade_required` instead of silently replacing the active runtime. Upgrade only
+under an explicit external Owner reference:
+
+```bash
+governor default-upgrade \
+  --owner-authorization-ref <external-owner-reference>
+```
+
+The upgrade verifies the existing managed AGENTS/Hook projections and stable
+launcher hashes, preserves unrelated configuration, installs a content-addressed
+runtime, and writes an upgrade receipt. Disable it with:
+
 ```bash
 governor default-disable
 ```
 
 ## Status
 
-`v0.1.0-beta.2` is a public experiment. The deterministic kernel and default-entry
+`v0.1.0-beta.3` is a public experiment. The deterministic kernel and default-entry
 path have local test coverage; live savings and broad compatibility have not been
 established. Please report a minimal reproduction through
 [GitHub Issues](https://github.com/rossky094-hub/development-governor/issues).

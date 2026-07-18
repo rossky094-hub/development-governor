@@ -154,7 +154,7 @@ Run `tests.test_public_release` and confirm GREEN.
 **Files:**
 - No new source files.
 
-- [ ] **Step 1: Run full local regression**
+- [x] **Step 1: Run full local regression**
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v

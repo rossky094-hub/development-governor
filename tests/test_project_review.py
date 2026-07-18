@@ -254,6 +254,63 @@ class ProjectReviewTests(unittest.TestCase):
             normalized_prompt,
         )
 
+    def test_output_schema_is_closed_and_explicitly_typed_for_structured_outputs(self):
+        contract = ProjectReviewContract.from_mapping(self.contract_mapping())
+        workspace = materialize_review_context(
+            contract, self.root / "typed-schema-review", review_batch_id="d" * 64
+        )
+        schema = json.loads(workspace.output_schema_path.read_text(encoding="utf-8"))
+
+        def assert_closed_and_typed(node, path="$"):
+            if not isinstance(node, dict):
+                return
+            self.assertNotIn("const", node, path + " uses unsupported const")
+            if "enum" in node:
+                self.assertIn("type", node, path + " must declare type")
+            if node.get("type") == "object":
+                self.assertFalse(
+                    node.get("additionalProperties", True),
+                    path + " must set additionalProperties=false",
+                )
+                properties = node.get("properties", {})
+                self.assertEqual(
+                    set(node.get("required", [])),
+                    set(properties),
+                    path + " must require every declared property",
+                )
+                for name, child in properties.items():
+                    assert_closed_and_typed(child, path + "." + name)
+            if node.get("type") == "array":
+                self.assertIn("items", node, path + " must declare array items")
+                assert_closed_and_typed(node["items"], path + "[]")
+
+        assert_closed_and_typed(schema)
+        properties = schema["properties"]
+        self.assertEqual(properties["acceptance_target_scope_ids"]["type"], "array")
+        self.assertEqual(
+            properties["acceptance_target_scope_ids"]["items"],
+            {"type": "string"},
+        )
+        self.assertEqual(
+            properties["acceptance_target_scope_ids"]["minItems"],
+            len(contract.acceptance_target_scope_ids),
+        )
+        self.assertEqual(
+            properties["acceptance_target_scope_ids"]["maxItems"],
+            len(contract.acceptance_target_scope_ids),
+        )
+        for name in (
+            "batch_id",
+            "owner_review_authorization_ref",
+            "review_budget_reservation_ref",
+            "review_mode",
+            "verdict",
+            "next_allowed_move",
+        ):
+            self.assertEqual(properties[name]["type"], "string")
+        self.assertEqual(properties["candidate"]["properties"]["path"]["type"], "string")
+        self.assertEqual(properties["candidate"]["properties"]["hash"]["type"], "string")
+
     def test_review_prompt_names_the_hash_bound_candidate_path(self):
         alternate = self.repo / "docs" / "release-spec.md"
         alternate.write_text("# Release Spec\n", encoding="utf-8")

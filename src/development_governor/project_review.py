@@ -962,6 +962,38 @@ def _review_receipt_schema(
         "major_revision_required",
         "blocked_independent_review",
     ]
+    finding_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "finding_id",
+            "severity",
+            "title",
+            "location",
+            "trigger",
+            "consequence",
+            "minimum_repair",
+        ],
+        "properties": {
+            "finding_id": {"type": "string"},
+            "severity": {
+                "type": "string",
+                "enum": ["critical", "important", "minor"],
+            },
+            "title": {"type": "string"},
+            "location": {"type": "string"},
+            "trigger": {"type": "string"},
+            "consequence": {"type": "string"},
+            "minimum_repair": {"type": "string"},
+        },
+    }
+    counterexample_properties = {
+        "applicable_counterexamples": {"type": "integer"},
+        "counterexample_blocked": {"type": "integer"},
+        "counterexample_succeeded": {"type": "integer"},
+        "not_run": {"type": "integer"},
+        "not_applicable": {"type": "integer"},
+    }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -987,27 +1019,76 @@ def _review_receipt_schema(
                 "additionalProperties": False,
                 "required": ["path", "hash"],
                 "properties": {
-                    "path": {"const": contract.candidate.path},
-                    "hash": {"const": contract.candidate.sha256},
+                    "path": {
+                        "type": "string",
+                        "enum": [contract.candidate.path],
+                    },
+                    "hash": {
+                        "type": "string",
+                        "enum": [contract.candidate.sha256],
+                    },
                 },
             },
-            "batch_id": {"const": review_batch_id},
+            "batch_id": {"type": "string", "enum": [review_batch_id]},
             "acceptance_target_scope_ids": {
-                "const": list(contract.acceptance_target_scope_ids)
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": len(contract.acceptance_target_scope_ids),
+                "maxItems": len(contract.acceptance_target_scope_ids),
             },
             "owner_review_authorization_ref": {
-                "const": contract.owner_review_authorization_ref
+                "type": "string",
+                "enum": [contract.owner_review_authorization_ref],
             },
-            "review_budget_reservation_ref": {"const": review_batch_id},
-            "review_mode": {"const": contract.review_mode},
-            "counterexample_summary": {"type": "object"},
-            "findings": {"type": "array", "items": {"type": "object"}},
+            "review_budget_reservation_ref": {
+                "type": "string",
+                "enum": [review_batch_id],
+            },
+            "review_mode": {
+                "type": "string",
+                "enum": [contract.review_mode],
+            },
+            "counterexample_summary": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": list(counterexample_properties),
+                "properties": counterexample_properties,
+            },
+            "findings": {"type": "array", "items": finding_schema},
             "independent_scopes": {
                 "type": "array",
-                "items": {"type": "object"},
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "scope_id",
+                        "acceptance_id",
+                        "status",
+                        "findings",
+                    ],
+                    "properties": {
+                        "scope_id": {"type": "string"},
+                        "acceptance_id": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": [
+                                "complete",
+                                "skipped_due_known_blocker",
+                                "failed",
+                            ],
+                        },
+                        "findings": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                },
             },
-            "verdict": {"enum": verdicts},
-            "next_allowed_move": {"const": "owner_decision"},
+            "verdict": {"type": "string", "enum": verdicts},
+            "next_allowed_move": {
+                "type": "string",
+                "enum": ["owner_decision"],
+            },
             "can_claim": {"type": "array", "items": {"type": "string"}},
             "cannot_claim": {
                 "type": "array",

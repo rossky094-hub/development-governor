@@ -17,11 +17,18 @@ class PublicReleaseTests(unittest.TestCase):
         metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
         self.assertIn('name = "development-governor"', metadata)
-        self.assertIn('version = "0.1.0b3"', metadata)
+        self.assertIn('version = "0.1.0b4"', metadata)
         self.assertIn('dependencies = []', metadata)
         self.assertIn('development-governor = "development_governor.cli:main"', metadata)
         self.assertIn('governor = "development_governor.cli:main"', metadata)
         self.assertIn('include = ["development_governor*"]', metadata)
+        self.assertIn(
+            "@v0.1.0-beta.4",
+            (ROOT / "README.md").read_text(encoding="utf-8"),
+        )
+        self.assertTrue(
+            (ROOT / "docs" / "releases" / "v0.1.0-beta.4.md").is_file()
+        )
 
     def test_module_entrypoint_has_public_program_name(self):
         completed = subprocess.run(

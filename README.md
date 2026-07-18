@@ -22,7 +22,7 @@ product evidence.
 Requires Python 3.9+ and Git.
 
 ```bash
-pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
+pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.4
 governor demo
 ```
 
@@ -30,7 +30,7 @@ governor demo
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
+.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.4
 .venv/bin/governor demo
 ```
 
@@ -142,7 +142,10 @@ governor default-upgrade \
 
 The upgrade verifies the existing managed AGENTS/Hook projections and stable
 launcher hashes, preserves unrelated configuration, installs a content-addressed
-runtime, and writes an upgrade receipt. Disable it with:
+runtime, and writes an upgrade receipt. When activation is explicitly bound to a
+Governor source checkout, the Hook also denies external-project writes if that source
+has advanced past the active runtime or is unavailable. The Governor repository itself
+and the explicit upgrade route remain available for recovery. Disable it with:
 
 ```bash
 governor default-disable
@@ -150,7 +153,7 @@ governor default-disable
 
 ## Status
 
-`v0.1.0-beta.3` is a public experiment. The deterministic kernel and default-entry
+`v0.1.0-beta.4` is a public experiment. The deterministic kernel and default-entry
 path have local test coverage; live savings and broad compatibility have not been
 established. Please report a minimal reproduction through
 [GitHub Issues](https://github.com/rossky094-hub/development-governor/issues).

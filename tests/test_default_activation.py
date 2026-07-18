@@ -58,6 +58,8 @@ class DefaultActivationTests(unittest.TestCase):
         self.assertIn("# Existing rules", agents)
         self.assertEqual(agents.count(AGENTS_BEGIN), 1)
         self.assertEqual(agents.count(AGENTS_END), 1)
+        self.assertIn("review-spec", agents)
+        self.assertIn("project-aware read-only reviewer", agents)
         self.assertEqual(hooks["custom"], {"preserve": True})
         self.assertIn("PostToolUse", hooks["hooks"])
         self.assertEqual(len(hooks["hooks"]["PreToolUse"]), 1)

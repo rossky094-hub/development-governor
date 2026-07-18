@@ -85,7 +85,6 @@ class HookGuardTests(unittest.TestCase):
             ),
             {},
         )
-
     def test_external_mutation_requires_current_bound_runtime_source(self):
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
@@ -312,6 +311,16 @@ class HookGuardTests(unittest.TestCase):
                 self.event(
                     "Bash",
                     f"{launcher} prepare --json-base64 eyJyZXN1bHQiOiAieCJ9",
+                ),
+                state_root=self.state_root,
+            ),
+            {},
+        )
+        self.assertEqual(
+            evaluate_hook_event(
+                self.event(
+                    "Bash",
+                    f"{launcher} review-spec /tmp/review.json --output-dir /tmp/review-output",
                 ),
                 state_root=self.state_root,
             ),

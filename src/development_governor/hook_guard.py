@@ -23,6 +23,7 @@ _GOVERNOR_COMMANDS = {
     "enroll",
     "migrate-policy",
     "prepare",
+    "review-spec",
     "start",
     "status",
     "check",

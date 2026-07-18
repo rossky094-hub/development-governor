@@ -17,6 +17,13 @@ from development_governor.stage_control import (
     StageControlError,
     StageControlPolicy,
 )
+from development_governor.project_review import (
+    ProjectReviewContract,
+    ProjectReviewError,
+    ProjectReviewGovernor,
+    build_project_review_command,
+    materialize_review_context,
+)
 
 __all__ = [
     "ContractError",
@@ -30,4 +37,9 @@ __all__ = [
     "stage_skill_candidate",
     "StageControlError",
     "StageControlPolicy",
+    "ProjectReviewContract",
+    "ProjectReviewError",
+    "ProjectReviewGovernor",
+    "build_project_review_command",
+    "materialize_review_context",
 ]

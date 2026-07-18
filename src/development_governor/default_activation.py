@@ -177,6 +177,8 @@ def _managed_agents_block(launcher_path: str) -> str:
             "Read-only inspection, explanation, and status checks remain allowed.",
             f"Launcher: `{launcher_path}`",
             "Route: enroll (first project use) -> prepare -> start -> implement -> verify -> close.",
+            f"Frozen Spec review: `{launcher_path} review-spec <contract> --output-dir <outside-repo-dir>` launches one hash-bound project-aware read-only reviewer.",
+            "The reviewer owns semantic findings and verdict; Owner acceptance and implementation authorization remain external.",
             "Do not invent Owner authority, acceptance IDs, or acceptance evidence.",
             "Do not modify protected acceptance material. Do not claim completion before verify and close.",
             "Native multi-agent execution remains allowed only for declared independent deliverables with independent acceptance IDs.",

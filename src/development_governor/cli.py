@@ -46,6 +46,11 @@ from development_governor.project_entry import (
     verify_task,
 )
 from development_governor.public_demo import run_demo
+from development_governor.project_review import (
+    ProjectReviewContract,
+    ProjectReviewError,
+    ProjectReviewGovernor,
+)
 
 
 def _load_contract(path: str) -> RunContract:
@@ -53,6 +58,13 @@ def _load_contract(path: str) -> RunContract:
     if not isinstance(raw, dict):
         raise ContractError("contract root must be a JSON object")
     return RunContract.from_mapping(raw)
+
+
+def _load_project_review_contract(path: str) -> ProjectReviewContract:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ProjectReviewError("project review contract root must be a JSON object")
+    return ProjectReviewContract.from_mapping(raw)
 
 
 def _require_external_contract_path(path: str, contract: RunContract) -> None:
@@ -110,6 +122,14 @@ def main(argv=None) -> int:
     run.add_argument("contract")
     run.add_argument("--output-dir", required=True)
     run.add_argument("--codex", default="codex")
+
+    review_spec = subparsers.add_parser(
+        "review-spec",
+        help="run one hash-bound project-aware Spec reviewer",
+    )
+    review_spec.add_argument("contract")
+    review_spec.add_argument("--output-dir", required=True)
+    review_spec.add_argument("--codex", default="codex")
 
     stage = subparsers.add_parser(
         "stage-skill", help="copy an installed Skill into a new Git candidate"
@@ -199,6 +219,12 @@ def main(argv=None) -> int:
             return hook_main()
         if args.command == "demo":
             payload = run_demo()
+        elif args.command == "review-spec":
+            review_contract = _load_project_review_contract(args.contract)
+            _require_external_contract_path(args.contract, review_contract)
+            payload = ProjectReviewGovernor(
+                args.codex, state_root=DEFAULT_STATE_ROOT
+            ).run(review_contract, Path(args.output_dir))
         elif args.command == "enroll":
             payload = enroll_project(
                 _json_source(args.policy, args.json_base64),
@@ -359,6 +385,7 @@ def main(argv=None) -> int:
         ActivationError,
         ContractError,
         ProjectEntryError,
+        ProjectReviewError,
         SkillCandidateError,
         json.JSONDecodeError,
         OSError,
@@ -370,6 +397,8 @@ def main(argv=None) -> int:
     if args.command == "verify" and payload.get("status") != "verification_passed":
         return 1
     if args.command == "check" and payload.get("status") != "check_passed":
+        return 1
+    if args.command == "review-spec" and payload.get("status") != "complete":
         return 1
     return 0
 

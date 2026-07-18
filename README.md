@@ -84,6 +84,25 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 [policy](examples/project-policy.example.json) and
 [task capsule](examples/task-capsule.example.json) templates.
 
+### Project-aware Spec review
+
+The optional `review-spec` route launches a dedicated reviewer agent; the Governor
+does not issue the semantic verdict itself. The contract supplies a hash-bound frozen
+candidate, closed project context, external reviewer Skill, one review-wave lineage,
+and explicit acceptance target scopes:
+
+```bash
+governor review-spec /outside/project-review-contract.json \
+  --output-dir /outside/project-review-run
+```
+
+The reviewer runs against a materialized read-only context and returns one
+schema-bound receipt for an external Owner decision. Serial review disables native
+multi-agent execution. Parallel review requires at least two independently identified
+review scopes and acceptance IDs; it is not created merely to add read-only probes.
+See the [project-aware review guide](docs/public/project-aware-spec-review.md) and
+[contract example](examples/project-review-capsule.example.json).
+
 ## What it controls
 
 - External, append-only project policy and task state.
@@ -98,6 +117,8 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
   independent acceptance IDs.
 - Optional root-process supervision, product-change deadlines, and observed token
   caps when telemetry is actually available.
+- One hash-bound, project-aware Spec reviewer process with a machine-validated receipt,
+  one-wave lineage accounting, and same-session interruption recovery.
 
 ## What it does not control
 
@@ -109,6 +130,8 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
   it does not confine malicious absolute writes to unrelated host paths.
 - It cannot guarantee that a specification is correct or that an accepted change is
   useful.
+- It validates reviewer context, topology, budget, nonmutation, and receipt identity;
+  the dedicated reviewer agent, not the Governor, owns the semantic verdict.
 - Owner references are preserved and audited but not cryptographically authenticated.
 - Token telemetry is optional and may be unavailable. This beta makes no measured
   cost-saving, quality-improvement, or productivity claim.

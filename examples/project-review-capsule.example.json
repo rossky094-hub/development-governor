@@ -1,0 +1,63 @@
+{
+  "schema_version": "development-governor.project-review-contract.v0",
+  "objective": "Review the frozen candidate for Owner acceptance readiness.",
+  "repo_path": "/absolute/path/to/your-project",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "high",
+  "max_elapsed_seconds": 1800,
+  "max_observed_total_tokens": null,
+  "max_parallel_agents": 1,
+  "max_total_agents": 1,
+  "max_spawn_depth": 1,
+  "review_mode": "full",
+  "review_scope_id": "your-project:spec-review",
+  "owner_review_authorization_ref": "owner:review/replace-with-real-reference",
+  "owner_revision_ref": null,
+  "candidate": {
+    "path": "docs/spec.md",
+    "sha256": "replace-with-lowercase-sha256"
+  },
+  "context_inputs": [
+    {
+      "role": "project_goal",
+      "path": "docs/project-goal.md",
+      "sha256": "replace-with-lowercase-sha256"
+    },
+    {
+      "role": "parent_baseline",
+      "path": "docs/accepted-baseline.md",
+      "sha256": "replace-with-lowercase-sha256"
+    }
+  ],
+  "reviewer_skill": {
+    "root": "/absolute/path/to/reviewing-specs-before-acceptance",
+    "files": [
+      {
+        "path": "SKILL.md",
+        "sha256": "replace-with-lowercase-sha256"
+      },
+      {
+        "path": "references/gate-catalog.md",
+        "sha256": "replace-with-lowercase-sha256"
+      },
+      {
+        "path": "templates/spec-review-receipt.md",
+        "sha256": "replace-with-lowercase-sha256"
+      }
+    ]
+  },
+  "acceptance_target_scope_ids": [
+    "your-project:implementation"
+  ],
+  "review_scopes": [],
+  "lineage": {
+    "lineage_root_id": "your-project-spec-review-v1",
+    "ledger_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "max_elapsed_seconds": 3600,
+    "max_invocations": 2,
+    "max_review_waves": 1,
+    "resume_from_reservation_id": null,
+    "resume_session_id": null,
+    "owner_review_credit": null
+  }
+}

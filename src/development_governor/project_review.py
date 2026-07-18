@@ -1,0 +1,1244 @@
+"""Hash-bound contracts for project-aware, read-only Spec review runs."""
+
+from dataclasses import asdict, dataclass
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import subprocess
+import time
+from typing import Any, Mapping, Optional, Tuple
+
+from development_governor.lineage import (
+    LineageError,
+    LineagePolicy,
+    lineage_ledger_path,
+    reserve_lineage,
+    settle_lineage,
+)
+from development_governor.runner import (
+    _git_changed_paths,
+    _git_head,
+    _require_clean_git_worktree,
+    _session_id_from_jsonl,
+    _terminate_process_group,
+    _token_usage_from_jsonl,
+)
+from development_governor.supervisor import supervise_root_process
+
+
+_CONTEXT_ROLES = {
+    "project_goal",
+    "parent_baseline",
+    "contract",
+    "decision_record",
+    "authority_record",
+    "evidence",
+    "open_obligations",
+    "prior_review_receipt",
+    "trusted_diff",
+    "dependency_map",
+    "prior_finding_map",
+}
+
+
+class ProjectReviewError(ValueError):
+    """Raised when a project review contract cannot be enforced."""
+
+
+@dataclass(frozen=True)
+class ReviewFile:
+    path: str
+    sha256: str
+    role: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ReviewerSkill:
+    root: str
+    files: Tuple[ReviewFile, ...]
+
+
+@dataclass(frozen=True)
+class ReviewScope:
+    scope_id: str
+    objective: str
+    acceptance_id: str
+
+
+@dataclass(frozen=True)
+class ReviewWorkspace:
+    output_dir: Path
+    context_root: Path
+    manifest_path: Path
+    output_schema_path: Path
+    review_receipt_path: Path
+    review_batch_id: str
+    context_tree_sha256: str
+    output_schema_sha256: str
+
+
+@dataclass(frozen=True)
+class ProjectReviewContract:
+    schema_version: str
+    objective: str
+    repo_path: str
+    model: str
+    reasoning_effort: str
+    max_elapsed_seconds: int
+    max_observed_total_tokens: Optional[int]
+    max_parallel_agents: int
+    max_total_agents: int
+    max_spawn_depth: int
+    review_mode: str
+    review_scope_id: str
+    owner_review_authorization_ref: str
+    owner_revision_ref: Optional[str]
+    candidate: ReviewFile
+    context_inputs: Tuple[ReviewFile, ...]
+    reviewer_skill: ReviewerSkill
+    acceptance_target_scope_ids: Tuple[str, ...]
+    review_scopes: Tuple[ReviewScope, ...]
+    lineage: LineagePolicy
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> "ProjectReviewContract":
+        if not isinstance(raw, Mapping):
+            raise ProjectReviewError("project review contract must be an object")
+        required = {
+            "schema_version",
+            "objective",
+            "repo_path",
+            "model",
+            "reasoning_effort",
+            "max_elapsed_seconds",
+            "max_observed_total_tokens",
+            "max_parallel_agents",
+            "max_total_agents",
+            "max_spawn_depth",
+            "review_mode",
+            "review_scope_id",
+            "owner_review_authorization_ref",
+            "owner_revision_ref",
+            "candidate",
+            "context_inputs",
+            "reviewer_skill",
+            "acceptance_target_scope_ids",
+            "review_scopes",
+            "lineage",
+        }
+        missing = sorted(required.difference(raw))
+        if missing:
+            raise ProjectReviewError(
+                "project review contract missing fields: " + ", ".join(missing)
+            )
+        unsupported = sorted(set(raw).difference(required))
+        if unsupported:
+            raise ProjectReviewError(
+                "project review contract contains unsupported fields: "
+                + ", ".join(unsupported)
+            )
+        if raw["schema_version"] != "development-governor.project-review-contract.v0":
+            raise ProjectReviewError("unsupported project review schema_version")
+        repo = Path(_nonempty(raw["repo_path"], "repo_path")).expanduser().resolve()
+        if not repo.is_dir():
+            raise ProjectReviewError("repo_path must be an existing directory")
+
+        candidate = _project_file(raw["candidate"], repo, role=None)
+        context_inputs = _context_files(raw["context_inputs"], repo)
+        context_paths = [item.path for item in context_inputs]
+        if candidate.path in context_paths or len(set(context_paths)) != len(context_paths):
+            raise ProjectReviewError(
+                "candidate and context input paths must be unique"
+            )
+        reviewer_skill = _reviewer_skill(raw["reviewer_skill"], repo)
+        review_mode = _nonempty(raw["review_mode"], "review_mode")
+        if review_mode not in {"full", "incremental"}:
+            raise ProjectReviewError("review_mode must be full or incremental")
+        reasoning_effort = _nonempty(raw["reasoning_effort"], "reasoning_effort")
+        if reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+        }:
+            raise ProjectReviewError("reasoning_effort is not supported")
+        owner_revision_ref = _optional_string(
+            raw["owner_revision_ref"], "owner_revision_ref"
+        )
+        if review_mode == "incremental":
+            roles = {item.role for item in context_inputs}
+            required_impact_roles = {
+                "prior_review_receipt",
+                "trusted_diff",
+                "dependency_map",
+                "prior_finding_map",
+            }
+            if (
+                not required_impact_roles.issubset(roles)
+                or owner_revision_ref is None
+            ):
+                raise ProjectReviewError(
+                    "incremental review requires prior receipt, trusted diff, "
+                    "dependency map, prior finding map, and owner_revision_ref"
+                )
+        targets = _unique_strings(
+            raw["acceptance_target_scope_ids"], "acceptance_target_scope_ids"
+        )
+        review_scopes = _review_scopes(raw["review_scopes"])
+        max_parallel_agents = _positive_int(
+            raw["max_parallel_agents"], "max_parallel_agents"
+        )
+        max_total_agents = _positive_int(
+            raw["max_total_agents"], "max_total_agents"
+        )
+        max_spawn_depth = _positive_int(
+            raw["max_spawn_depth"], "max_spawn_depth"
+        )
+        if max_spawn_depth != 1:
+            raise ProjectReviewError("max_spawn_depth must be exactly one")
+        if not review_scopes:
+            if max_parallel_agents != 1 or max_total_agents != 1:
+                raise ProjectReviewError(
+                    "serial review requires one active and total agent"
+                )
+        else:
+            if len(review_scopes) < 2:
+                raise ProjectReviewError(
+                    "review_scopes must contain zero or at least two independent lanes"
+                )
+            if max_parallel_agents < 2 or max_parallel_agents > len(review_scopes):
+                raise ProjectReviewError(
+                    "max_parallel_agents must be between two and review scope count"
+                )
+            if (
+                max_total_agents < max_parallel_agents
+                or max_total_agents > len(review_scopes)
+            ):
+                raise ProjectReviewError(
+                    "max_total_agents must cover active agents without exceeding scopes"
+                )
+        try:
+            lineage = LineagePolicy.from_mapping(raw["lineage"])
+        except LineageError as error:
+            raise ProjectReviewError(str(error)) from error
+        if lineage.max_review_waves != 1:
+            raise ProjectReviewError(
+                "project review lineage must default to exactly one review wave"
+            )
+
+        return cls(
+            schema_version=raw["schema_version"],
+            objective=_nonempty(raw["objective"], "objective"),
+            repo_path=str(repo),
+            model=_nonempty(raw["model"], "model"),
+            reasoning_effort=reasoning_effort,
+            max_elapsed_seconds=_positive_int(
+                raw["max_elapsed_seconds"], "max_elapsed_seconds"
+            ),
+            max_observed_total_tokens=_optional_positive_int(
+                raw["max_observed_total_tokens"], "max_observed_total_tokens"
+            ),
+            max_parallel_agents=max_parallel_agents,
+            max_total_agents=max_total_agents,
+            max_spawn_depth=max_spawn_depth,
+            review_mode=review_mode,
+            review_scope_id=_nonempty(raw["review_scope_id"], "review_scope_id"),
+            owner_review_authorization_ref=_nonempty(
+                raw["owner_review_authorization_ref"],
+                "owner_review_authorization_ref",
+            ),
+            owner_revision_ref=owner_revision_ref,
+            candidate=candidate,
+            context_inputs=context_inputs,
+            reviewer_skill=reviewer_skill,
+            acceptance_target_scope_ids=targets,
+            review_scopes=review_scopes,
+            lineage=lineage,
+        )
+
+    @property
+    def context_hash(self) -> str:
+        return _canonical_hash([asdict(item) for item in self.context_inputs])
+
+    @property
+    def skill_bundle_hash(self) -> str:
+        return _canonical_hash(
+            {
+                "root": self.reviewer_skill.root,
+                "files": [asdict(item) for item in self.reviewer_skill.files],
+            }
+        )
+
+    @property
+    def review_identity_hash(self) -> str:
+        return _canonical_hash(
+            {
+                "schema_version": self.schema_version,
+                "objective": self.objective,
+                "repo_path": self.repo_path,
+                "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
+                "max_elapsed_seconds": self.max_elapsed_seconds,
+                "max_observed_total_tokens": self.max_observed_total_tokens,
+                "max_parallel_agents": self.max_parallel_agents,
+                "max_total_agents": self.max_total_agents,
+                "max_spawn_depth": self.max_spawn_depth,
+                "candidate": asdict(self.candidate),
+                "context_hash": self.context_hash,
+                "skill_bundle_hash": self.skill_bundle_hash,
+                "review_mode": self.review_mode,
+                "review_scope_id": self.review_scope_id,
+                "owner_review_authorization_ref": (
+                    self.owner_review_authorization_ref
+                ),
+                "owner_revision_ref": self.owner_revision_ref,
+                "acceptance_target_scope_ids": list(
+                    self.acceptance_target_scope_ids
+                ),
+                "review_scopes": [asdict(item) for item in self.review_scopes],
+                "lineage": {
+                    "lineage_root_id": self.lineage.lineage_root_id,
+                    "max_elapsed_seconds": self.lineage.max_elapsed_seconds,
+                    "max_invocations": self.lineage.max_invocations,
+                    "max_review_waves": self.lineage.max_review_waves,
+                },
+            }
+        )
+
+    @property
+    def contract_hash(self) -> str:
+        return _canonical_hash(asdict(self))
+
+    def validate_material(self) -> dict:
+        mismatched = []
+        repo = Path(self.repo_path)
+        for item in (self.candidate,) + self.context_inputs:
+            if not _matches(repo / item.path, item.sha256, root=repo):
+                mismatched.append(item.path)
+        skill_root = Path(self.reviewer_skill.root)
+        for item in self.reviewer_skill.files:
+            if not _matches(skill_root / item.path, item.sha256, root=skill_root):
+                mismatched.append("reviewer_skill/" + item.path)
+        return {
+            "status": "matched" if not mismatched else "mismatch",
+            "mismatched_files": mismatched,
+        }
+
+
+class ProjectReviewGovernor:
+    """Launch one content-bound reviewer without acquiring its semantic authority."""
+
+    def __init__(self, codex_executable: str = "codex", *, state_root: Path):
+        self.codex_executable = str(codex_executable)
+        self.state_root = Path(state_root).expanduser().resolve()
+
+    def run(
+        self, contract: ProjectReviewContract, output_dir: Path
+    ) -> Mapping[str, Any]:
+        if not isinstance(contract, ProjectReviewContract):
+            raise ProjectReviewError("contract must be a ProjectReviewContract")
+        material = contract.validate_material()
+        if material["status"] != "matched":
+            raise ProjectReviewError(
+                "review material hash mismatch: "
+                + ", ".join(material["mismatched_files"])
+            )
+        repo = Path(contract.repo_path)
+        try:
+            _require_clean_git_worktree(repo)
+        except Exception as error:
+            raise ProjectReviewError(str(error)) from error
+        baseline_head = _git_head(repo)
+        lineage_path = lineage_ledger_path(
+            self.state_root,
+            repo,
+            contract.lineage.lineage_root_id,
+        )
+        is_resume = contract.lineage.resume_session_id is not None
+        if is_resume:
+            workspace = _resume_workspace(contract, output_dir)
+        else:
+            _preflight_new_workspace(contract, output_dir)
+            workspace = None
+        try:
+            reservation = reserve_lineage(
+                contract.lineage,
+                ledger_path=lineage_path,
+                contract_hash=contract.contract_hash,
+                candidate_hash=contract.candidate.sha256,
+                requested_elapsed_seconds=contract.max_elapsed_seconds,
+                requested_review_waves=0 if is_resume else 1,
+                current_scope_id=contract.review_scope_id,
+                primary_mode="governance",
+                owner_acceptance_ref=None,
+                owner_revision_ref=contract.owner_revision_ref,
+            )
+        except LineageError as error:
+            raise ProjectReviewError(str(error)) from error
+
+        if workspace is None:
+            try:
+                workspace = materialize_review_context(
+                    contract,
+                    output_dir,
+                    review_batch_id=reservation["reservation_id"],
+                )
+            except Exception as error:
+                try:
+                    settle_lineage(
+                        lineage_path,
+                        reservation["reservation_id"],
+                        terminal_status="runner_error",
+                        model_started=False,
+                        actual_elapsed_seconds=0,
+                        session_id=None,
+                    )
+                except LineageError as settlement_error:
+                    raise ProjectReviewError(
+                        "failed to settle unstarted review reservation"
+                    ) from settlement_error
+                if isinstance(error, ProjectReviewError):
+                    raise
+                raise ProjectReviewError(
+                    "failed to materialize review workspace"
+                ) from error
+        command = build_project_review_command(
+            contract,
+            workspace,
+            codex_executable=self.codex_executable,
+        )
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as error:
+            settle_lineage(
+                lineage_path,
+                reservation["reservation_id"],
+                terminal_status="runner_error",
+                model_started=False,
+                actual_elapsed_seconds=0,
+                session_id=None,
+            )
+            raise ProjectReviewError("failed to start reviewer agent") from error
+
+        supervision_started_at = time.monotonic()
+        try:
+            supervision = supervise_root_process(
+                process,
+                raw_events_path=workspace.output_dir / "raw-events.jsonl",
+                stderr_path=workspace.output_dir / "stderr.txt",
+                changed_paths_probe=lambda: _git_changed_paths(repo, baseline_head),
+                allowed_paths=(),
+                product_paths=(),
+                max_elapsed_seconds=contract.max_elapsed_seconds,
+                product_change_deadline_seconds=None,
+                max_observed_total_tokens=contract.max_observed_total_tokens,
+                token_usage_from_jsonl=_token_usage_from_jsonl,
+            )
+        except Exception as error:
+            _terminate_process_group(process)
+            try:
+                settle_lineage(
+                    lineage_path,
+                    reservation["reservation_id"],
+                    terminal_status="runner_error",
+                    model_started=True,
+                    actual_elapsed_seconds=max(
+                        0.0, time.monotonic() - supervision_started_at
+                    ),
+                    session_id=None,
+                )
+            except LineageError as settlement_error:
+                raise ProjectReviewError(
+                    "online review supervision failed and settlement failed"
+                ) from settlement_error
+            raise ProjectReviewError(
+                "online review supervision failed: " + str(error)
+            ) from error
+        raw_events = (workspace.output_dir / "raw-events.jsonl").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        session_id = _session_id_from_jsonl(raw_events)
+        token_usage = _token_usage_from_jsonl(raw_events)
+        final_changes = _git_changed_paths(repo, baseline_head)
+        context_unchanged = (
+            _directory_hash(workspace.context_root)
+            == workspace.context_tree_sha256
+            and _file_hash(workspace.output_schema_path)
+            == workspace.output_schema_sha256
+        )
+        review = None
+        receipt_error = None
+        if (
+            supervision.stop_reason is None
+            and process.returncode == 0
+            and not final_changes
+            and context_unchanged
+        ):
+            try:
+                review = _load_and_validate_review_receipt(contract, workspace)
+            except ProjectReviewError as error:
+                receipt_error = str(error)
+
+        if final_changes:
+            status = "stopped"
+            reason = "reviewer_modified_governed_repository"
+        elif not context_unchanged:
+            status = "stopped"
+            reason = "review_context_changed"
+        elif supervision.stop_reason is not None:
+            status = "interrupted" if session_id else "runner_error"
+            reason = supervision.stop_reason
+        elif process.returncode != 0:
+            status = "interrupted" if session_id else "runner_error"
+            reason = "reviewer_process_failed"
+        elif receipt_error is not None:
+            status = "stopped"
+            reason = "review_receipt_invalid"
+        else:
+            status = "complete"
+            reason = "review_receipt_validated"
+
+        try:
+            settlement = settle_lineage(
+                lineage_path,
+                reservation["reservation_id"],
+                terminal_status=status,
+                model_started=True,
+                actual_elapsed_seconds=supervision.elapsed_seconds,
+                session_id=session_id,
+            )
+        except LineageError as error:
+            raise ProjectReviewError(str(error)) from error
+
+        hard_controls = [
+            "hash_bound_project_context",
+            "external_hash_bound_reviewer_skill",
+            "read_only_reviewer_sandbox",
+            "governed_repository_nonmutation_probe",
+            "one_lineage_review_wave",
+            "machine_validated_review_receipt",
+        ]
+        soft_controls = []
+        if contract.review_scopes:
+            hard_controls.append("declared_review_scope_receipts")
+            soft_controls.extend(
+                [
+                    "native_worker_spawn_limits",
+                    "fresh_worker_context_prompt",
+                ]
+            )
+        else:
+            hard_controls.append("serial_multi_agent_disabled")
+        if contract.max_observed_total_tokens is not None:
+            hard_controls.append("observed_token_cap")
+
+        receipt = {
+            "schema_version": "development-governor.project-review-run-receipt.v0",
+            "status": status,
+            "reason": reason,
+            "contract_hash": contract.contract_hash,
+            "review_identity_hash": contract.review_identity_hash,
+            "review_batch_id": workspace.review_batch_id,
+            "session_id": session_id,
+            "token_usage": token_usage,
+            "exit_code": process.returncode,
+            "elapsed_seconds": supervision.elapsed_seconds,
+            "candidate": {
+                "path": contract.candidate.path,
+                "sha256": contract.candidate.sha256,
+            },
+            "context_hash": contract.context_hash,
+            "skill_bundle_hash": contract.skill_bundle_hash,
+            "materialized_context_sha256": workspace.context_tree_sha256,
+            "output_schema_sha256": workspace.output_schema_sha256,
+            "repository": {
+                "path": str(repo),
+                "baseline_head": baseline_head,
+                "changed_paths": final_changes,
+            },
+            "review": review,
+            "review_receipt_error": receipt_error,
+            "lineage": {
+                "ledger_path": str(lineage_path),
+                "reservation": reservation,
+                "settlement": settlement,
+                **settlement["projection"],
+            },
+            "authority_boundary": {
+                "governor_semantic_verdict": False,
+                "owner_acceptance": "pending",
+                "implementation_authorized": False,
+            },
+            "hard_controls": hard_controls,
+            "soft_controls": soft_controls,
+        }
+        _atomic_json_write(workspace.output_dir / "terminal-receipt.json", receipt)
+        return receipt
+
+
+def materialize_review_context(
+    contract: ProjectReviewContract,
+    output_dir: Path,
+    *,
+    review_batch_id: str,
+) -> ReviewWorkspace:
+    """Copy only hash-bound project and Skill inputs into one review workspace."""
+
+    if not isinstance(contract, ProjectReviewContract):
+        raise ProjectReviewError("contract must be a ProjectReviewContract")
+    material = contract.validate_material()
+    if material["status"] != "matched":
+        raise ProjectReviewError(
+            "review material hash mismatch: "
+            + ", ".join(material["mismatched_files"])
+        )
+    batch_id = _sha256(review_batch_id, "review_batch_id")
+    destination = _preflight_new_workspace(contract, output_dir)
+    repo = Path(contract.repo_path)
+    context_root = destination / "review-context"
+    context_root.mkdir(parents=True)
+
+    project_root = context_root / "project"
+    for item in (contract.candidate,) + contract.context_inputs:
+        _copy_bound_file(repo / item.path, project_root / item.path)
+
+    reviewer_root = context_root / "reviewer"
+    skill_root = Path(contract.reviewer_skill.root)
+    for item in contract.reviewer_skill.files:
+        _copy_bound_file(skill_root / item.path, reviewer_root / item.path)
+
+    manifest = {
+        "schema_version": "development-governor.project-review-manifest.v0",
+        "review_identity_hash": contract.review_identity_hash,
+        "review_batch_id": batch_id,
+        "candidate": asdict(contract.candidate),
+        "context_hash": contract.context_hash,
+        "context_inputs": [asdict(item) for item in contract.context_inputs],
+        "skill_bundle_hash": contract.skill_bundle_hash,
+        "reviewer_skill_files": [
+            asdict(item) for item in contract.reviewer_skill.files
+        ],
+        "review_mode": contract.review_mode,
+        "review_scope_id": contract.review_scope_id,
+        "owner_review_authorization_ref": (
+            contract.owner_review_authorization_ref
+        ),
+        "owner_revision_ref": contract.owner_revision_ref,
+        "acceptance_target_scope_ids": list(
+            contract.acceptance_target_scope_ids
+        ),
+        "review_scopes": [asdict(item) for item in contract.review_scopes],
+    }
+    manifest_path = context_root / "REVIEW-MANIFEST.json"
+    _write_json(manifest_path, manifest)
+    output_schema_path = destination / "review-receipt.schema.json"
+    _write_json(
+        output_schema_path,
+        _review_receipt_schema(contract, review_batch_id=batch_id),
+    )
+    review_receipt_path = destination / "review-receipt.json"
+    context_tree_sha256 = _directory_hash(context_root)
+    output_schema_sha256 = _file_hash(output_schema_path)
+    _write_json(
+        destination / "frozen-review-material.json",
+        {
+            "schema_version": "development-governor.frozen-review-material.v0",
+            "review_identity_hash": contract.review_identity_hash,
+            "review_batch_id": batch_id,
+            "context_tree_sha256": context_tree_sha256,
+            "output_schema_sha256": output_schema_sha256,
+        },
+    )
+    return ReviewWorkspace(
+        output_dir=destination,
+        context_root=context_root,
+        manifest_path=manifest_path,
+        output_schema_path=output_schema_path,
+        review_receipt_path=review_receipt_path,
+        review_batch_id=batch_id,
+        context_tree_sha256=context_tree_sha256,
+        output_schema_sha256=output_schema_sha256,
+    )
+
+
+def _preflight_new_workspace(
+    contract: ProjectReviewContract, output_dir: Path
+) -> Path:
+    destination = Path(output_dir).expanduser().resolve()
+    repo = Path(contract.repo_path)
+    if destination == repo or repo in destination.parents:
+        raise ProjectReviewError("review output_dir must be outside governed repository")
+    if destination.exists():
+        raise ProjectReviewError("review output_dir already exists")
+    return destination
+
+
+def build_project_review_command(
+    contract: ProjectReviewContract,
+    workspace: ReviewWorkspace,
+    *,
+    codex_executable: str = "codex",
+) -> Tuple[str, ...]:
+    """Build one isolated Codex command for the frozen review identity."""
+
+    feature = "--enable" if contract.review_scopes else "--disable"
+    command = [
+        codex_executable,
+        feature,
+        "multi_agent",
+        "--strict-config",
+        "-c",
+        'model_reasoning_effort="' + contract.reasoning_effort + '"',
+        "--model",
+        contract.model,
+    ]
+    if contract.lineage.resume_session_id is None:
+        command.extend(
+            [
+                "--sandbox",
+                "read-only",
+                "--cd",
+                str(workspace.context_root),
+                "exec",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--ignore-rules",
+            ]
+        )
+        command.extend(
+            [
+                "--json",
+                "--output-schema",
+                str(workspace.output_schema_path),
+                "--output-last-message",
+                str(workspace.review_receipt_path),
+                _review_prompt(contract, workspace),
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "exec",
+                "resume",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--json",
+                "--output-schema",
+                str(workspace.output_schema_path),
+                "--output-last-message",
+                str(workspace.review_receipt_path),
+                contract.lineage.resume_session_id,
+                _review_prompt(contract, workspace),
+            ]
+        )
+    return tuple(command)
+
+
+def _load_and_validate_review_receipt(
+    contract: ProjectReviewContract, workspace: ReviewWorkspace
+) -> dict:
+    try:
+        raw = json.loads(workspace.review_receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProjectReviewError("review receipt must be valid JSON") from error
+    required = {
+        "candidate",
+        "batch_id",
+        "acceptance_target_scope_ids",
+        "owner_review_authorization_ref",
+        "review_budget_reservation_ref",
+        "review_mode",
+        "counterexample_summary",
+        "findings",
+        "independent_scopes",
+        "verdict",
+        "next_allowed_move",
+        "can_claim",
+        "cannot_claim",
+    }
+    if not isinstance(raw, dict) or set(raw) != required:
+        raise ProjectReviewError("review receipt has invalid top-level fields")
+    if raw["candidate"] != {
+        "path": contract.candidate.path,
+        "hash": contract.candidate.sha256,
+    }:
+        raise ProjectReviewError("review receipt candidate identity mismatch")
+    exact_fields = {
+        "batch_id": workspace.review_batch_id,
+        "acceptance_target_scope_ids": list(
+            contract.acceptance_target_scope_ids
+        ),
+        "owner_review_authorization_ref": (
+            contract.owner_review_authorization_ref
+        ),
+        "review_budget_reservation_ref": workspace.review_batch_id,
+        "review_mode": contract.review_mode,
+        "next_allowed_move": "owner_decision",
+    }
+    for field, expected in exact_fields.items():
+        if raw[field] != expected:
+            raise ProjectReviewError("review receipt " + field + " mismatch")
+    verdicts = {
+        "accepted_for_owner_review",
+        "targeted_revision_required",
+        "major_revision_required",
+        "blocked_independent_review",
+    }
+    if raw["verdict"] not in verdicts:
+        raise ProjectReviewError("review receipt verdict is unsupported")
+    if not isinstance(raw["counterexample_summary"], dict):
+        raise ProjectReviewError("counterexample_summary must be an object")
+    if not isinstance(raw["findings"], list) or any(
+        not isinstance(item, dict) for item in raw["findings"]
+    ):
+        raise ProjectReviewError("findings must be an object array")
+    if not isinstance(raw["independent_scopes"], list) or any(
+        not isinstance(item, dict) for item in raw["independent_scopes"]
+    ):
+        raise ProjectReviewError("independent_scopes must be an object array")
+    for field in ("can_claim", "cannot_claim"):
+        if not isinstance(raw[field], list) or any(
+            not isinstance(item, str) or not item for item in raw[field]
+        ):
+            raise ProjectReviewError(field + " must be a string array")
+    if not contract.review_scopes and raw["independent_scopes"]:
+        raise ProjectReviewError(
+            "serial review receipt cannot invent independent scopes"
+        )
+    if contract.review_scopes:
+        expected_scopes = {
+            (item.scope_id, item.acceptance_id) for item in contract.review_scopes
+        }
+        observed_scopes = set()
+        statuses = []
+        for item in raw["independent_scopes"]:
+            if set(item) != {"scope_id", "acceptance_id", "status", "findings"}:
+                raise ProjectReviewError(
+                    "declared review scopes require closed scope receipts"
+                )
+            pair = (item["scope_id"], item["acceptance_id"])
+            status = item["status"]
+            if (
+                pair not in expected_scopes
+                or pair in observed_scopes
+                or status
+                not in {"complete", "skipped_due_known_blocker", "failed"}
+                or not isinstance(item["findings"], list)
+            ):
+                raise ProjectReviewError(
+                    "declared review scopes do not match receipt scopes"
+                )
+            observed_scopes.add(pair)
+            statuses.append(status)
+        if observed_scopes != expected_scopes:
+            raise ProjectReviewError(
+                "declared review scopes are incomplete in receipt"
+            )
+        if raw["verdict"] in {
+            "accepted_for_owner_review",
+            "targeted_revision_required",
+        } and any(status != "complete" for status in statuses):
+            raise ProjectReviewError(
+                "declared review scopes must complete for this verdict"
+            )
+        if raw["verdict"] == "blocked_independent_review" and all(
+            status == "complete" for status in statuses
+        ):
+            raise ProjectReviewError(
+                "blocked independent review requires an incomplete scope"
+            )
+    return raw
+
+
+def _resume_workspace(
+    contract: ProjectReviewContract, output_dir: Path
+) -> ReviewWorkspace:
+    destination = Path(output_dir).expanduser().resolve()
+    context_root = destination / "review-context"
+    manifest_path = context_root / "REVIEW-MANIFEST.json"
+    output_schema_path = destination / "review-receipt.schema.json"
+    frozen_path = destination / "frozen-review-material.json"
+    if (
+        not manifest_path.is_file()
+        or not output_schema_path.is_file()
+        or not frozen_path.is_file()
+    ):
+        raise ProjectReviewError("resume requires the original review workspace")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProjectReviewError("resume review manifest is invalid") from error
+    if manifest.get("review_identity_hash") != contract.review_identity_hash:
+        raise ProjectReviewError("resume review identity mismatch")
+    batch_id = _sha256(manifest.get("review_batch_id"), "review_batch_id")
+    try:
+        frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProjectReviewError("resume frozen review material is invalid") from error
+    context_tree_sha256 = _sha256(
+        frozen.get("context_tree_sha256"), "context_tree_sha256"
+    )
+    output_schema_sha256 = _sha256(
+        frozen.get("output_schema_sha256"), "output_schema_sha256"
+    )
+    if (
+        frozen.get("review_identity_hash") != contract.review_identity_hash
+        or frozen.get("review_batch_id") != batch_id
+        or _directory_hash(context_root) != context_tree_sha256
+        or _file_hash(output_schema_path) != output_schema_sha256
+    ):
+        raise ProjectReviewError("resume frozen review material mismatch")
+    return ReviewWorkspace(
+        output_dir=destination,
+        context_root=context_root,
+        manifest_path=manifest_path,
+        output_schema_path=output_schema_path,
+        review_receipt_path=destination / "review-receipt.json",
+        review_batch_id=batch_id,
+        context_tree_sha256=context_tree_sha256,
+        output_schema_sha256=output_schema_sha256,
+    )
+
+
+def _review_prompt(
+    contract: ProjectReviewContract, workspace: ReviewWorkspace
+) -> str:
+    scopes = [asdict(item) for item in contract.review_scopes]
+    scope_rule = (
+        "Do not spawn subagents; perform the one direct review yourself."
+        if not scopes
+        else (
+            "Dispatch at most one fresh-context read-only worker for each declared "
+            "review scope, with no descendants, then consolidate their results into "
+            "one receipt. Declared scopes: "
+            + json.dumps(scopes, sort_keys=True, separators=(",", ":"))
+        )
+    )
+    return f"""{contract.objective}
+
+You are the dedicated project-aware Spec reviewer for one frozen review batch.
+The Development Governor controls execution and receipt identity; you own only the
+semantic review. Read REVIEW-MANIFEST.json, reviewer/SKILL.md, the referenced gate
+catalog and receipt template completely before reviewing
+project/{contract.candidate.path}.
+
+Frozen review identity:
+- review_identity_hash: {contract.review_identity_hash}
+- review_budget_reservation_ref: {workspace.review_batch_id}
+- owner_review_authorization_ref: {contract.owner_review_authorization_ref}
+- acceptance_target_scope_ids: {json.dumps(list(contract.acceptance_target_scope_ids))}
+- review_mode: {contract.review_mode}
+- maximum active logical agents: {contract.max_parallel_agents}
+- maximum total logical agents: {contract.max_total_agents}
+- maximum spawn depth: {contract.max_spawn_depth}
+
+Use only files listed in REVIEW-MANIFEST.json. Do not read files outside this
+materialized context and do not use remembered conversation history. Do not edit the
+candidate, create authority, authorize implementation, or start another review.
+{scope_rule}
+
+Return only the single JSON object required by the supplied output schema. Findings
+and the verdict are your review evidence, not a Governor decision. The next allowed
+move must remain owner_decision.
+"""
+
+
+def _review_receipt_schema(
+    contract: ProjectReviewContract, *, review_batch_id: str
+) -> dict:
+    verdicts = [
+        "accepted_for_owner_review",
+        "targeted_revision_required",
+        "major_revision_required",
+        "blocked_independent_review",
+    ]
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "candidate",
+            "batch_id",
+            "acceptance_target_scope_ids",
+            "owner_review_authorization_ref",
+            "review_budget_reservation_ref",
+            "review_mode",
+            "counterexample_summary",
+            "findings",
+            "independent_scopes",
+            "verdict",
+            "next_allowed_move",
+            "can_claim",
+            "cannot_claim",
+        ],
+        "properties": {
+            "candidate": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "hash"],
+                "properties": {
+                    "path": {"const": contract.candidate.path},
+                    "hash": {"const": contract.candidate.sha256},
+                },
+            },
+            "batch_id": {"const": review_batch_id},
+            "acceptance_target_scope_ids": {
+                "const": list(contract.acceptance_target_scope_ids)
+            },
+            "owner_review_authorization_ref": {
+                "const": contract.owner_review_authorization_ref
+            },
+            "review_budget_reservation_ref": {"const": review_batch_id},
+            "review_mode": {"const": contract.review_mode},
+            "counterexample_summary": {"type": "object"},
+            "findings": {"type": "array", "items": {"type": "object"}},
+            "independent_scopes": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+            "verdict": {"enum": verdicts},
+            "next_allowed_move": {"const": "owner_decision"},
+            "can_claim": {"type": "array", "items": {"type": "string"}},
+            "cannot_claim": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+    }
+
+
+def _copy_bound_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(source.read_bytes())
+    destination.chmod(0o444)
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    data = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    with temporary.open("wb") as target:
+        target.write(data)
+        target.flush()
+        os.fsync(target.fileno())
+    os.replace(temporary, path)
+
+
+def _file_hash(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _directory_hash(root: Path) -> str:
+    root = Path(root).resolve()
+    entries = []
+    for item in sorted(root.rglob("*")):
+        relative = item.relative_to(root).as_posix()
+        if item.is_symlink():
+            entries.append(
+                {"path": relative, "kind": "symlink", "target": os.readlink(item)}
+            )
+        elif item.is_dir():
+            entries.append({"path": relative + "/", "kind": "directory"})
+        elif item.is_file():
+            entries.append(
+                {"path": relative, "kind": "file", "sha256": _file_hash(item)}
+            )
+        else:
+            entries.append({"path": relative, "kind": "special"})
+    return _canonical_hash(entries)
+
+
+def _context_files(raw: Any, repo: Path) -> Tuple[ReviewFile, ...]:
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ProjectReviewError("context_inputs must be a non-empty array")
+    result = []
+    for item in raw:
+        if not isinstance(item, Mapping) or set(item) != {"role", "path", "sha256"}:
+            raise ProjectReviewError(
+                "context input requires role, path, and sha256"
+            )
+        role = _nonempty(item["role"], "context input role")
+        if role not in _CONTEXT_ROLES:
+            raise ProjectReviewError("unsupported context input role: " + role)
+        result.append(_project_file(item, repo, role=role))
+    roles = {item.role for item in result}
+    for required_role in ("project_goal", "parent_baseline"):
+        if required_role not in roles:
+            raise ProjectReviewError(
+                "context_inputs require role " + required_role
+            )
+    return tuple(result)
+
+
+def _project_file(raw: Any, repo: Path, role: Optional[str]) -> ReviewFile:
+    expected = {"path", "sha256"} if role is None else {"role", "path", "sha256"}
+    if not isinstance(raw, Mapping) or set(raw) != expected:
+        raise ProjectReviewError("review file has invalid fields")
+    path = _relative_path(raw["path"], "path")
+    digest = _sha256(raw["sha256"], "sha256")
+    if not _matches(repo / path, digest, root=repo):
+        raise ProjectReviewError("review file hash mismatch: " + path)
+    return ReviewFile(path=path, sha256=digest, role=role)
+
+
+def _reviewer_skill(raw: Any, repo: Path) -> ReviewerSkill:
+    if not isinstance(raw, Mapping) or set(raw) != {"root", "files"}:
+        raise ProjectReviewError("reviewer_skill requires root and files")
+    root = Path(_nonempty(raw["root"], "reviewer_skill.root")).expanduser().resolve()
+    if not root.is_dir():
+        raise ProjectReviewError("reviewer_skill.root must be an existing directory")
+    if root == repo or repo in root.parents or root in repo.parents:
+        raise ProjectReviewError(
+            "reviewer skill root must be disjoint from governed repository"
+        )
+    files_raw = raw["files"]
+    if not isinstance(files_raw, (list, tuple)) or not files_raw:
+        raise ProjectReviewError("reviewer_skill.files must be a non-empty array")
+    files = []
+    for item in files_raw:
+        if not isinstance(item, Mapping) or set(item) != {"path", "sha256"}:
+            raise ProjectReviewError("reviewer skill file requires path and sha256")
+        path = _relative_path(item["path"], "reviewer skill path")
+        digest = _sha256(item["sha256"], "reviewer skill sha256")
+        if not _matches(root / path, digest, root=root):
+            raise ProjectReviewError("reviewer skill hash mismatch: " + path)
+        files.append(ReviewFile(path=path, sha256=digest))
+    file_paths = {item.path for item in files}
+    required_files = {
+        "SKILL.md",
+        "references/gate-catalog.md",
+        "templates/spec-review-receipt.md",
+    }
+    if len(file_paths) != len(files) or not required_files.issubset(file_paths):
+        raise ProjectReviewError(
+            "reviewer_skill.files must include unique required reviewer skill files"
+        )
+    return ReviewerSkill(root=str(root), files=tuple(files))
+
+
+def _review_scopes(raw: Any) -> Tuple[ReviewScope, ...]:
+    if not isinstance(raw, (list, tuple)):
+        raise ProjectReviewError("review_scopes must be an array")
+    result = []
+    for item in raw:
+        if not isinstance(item, Mapping) or set(item) != {
+            "scope_id",
+            "objective",
+            "acceptance_id",
+        }:
+            raise ProjectReviewError(
+                "review scope requires scope_id, objective, and acceptance_id"
+            )
+        result.append(
+            ReviewScope(
+                scope_id=_nonempty(item["scope_id"], "review scope_id"),
+                objective=_nonempty(item["objective"], "review objective"),
+                acceptance_id=_nonempty(
+                    item["acceptance_id"], "review acceptance_id"
+                ),
+            )
+        )
+    scope_ids = [item.scope_id for item in result]
+    acceptance_ids = [item.acceptance_id for item in result]
+    if len(set(scope_ids)) != len(scope_ids) or len(set(acceptance_ids)) != len(
+        acceptance_ids
+    ):
+        raise ProjectReviewError(
+            "review scope IDs and acceptance IDs must be unique"
+        )
+    return tuple(result)
+
+
+def _matches(path: Path, expected: str, *, root: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return False
+    root = root.resolve()
+    return (
+        not path.is_symlink()
+        and resolved.is_file()
+        and (resolved == root or root in resolved.parents)
+        and hashlib.sha256(resolved.read_bytes()).hexdigest() == expected
+    )
+
+
+def _relative_path(value: Any, field: str) -> str:
+    text = _nonempty(value, field).replace("\\", "/")
+    path = PurePosixPath(text)
+    if path.is_absolute() or ".." in path.parts or text.startswith("./"):
+        raise ProjectReviewError(field + " must be repository-relative")
+    normalized = str(path)
+    if normalized in ("", "."):
+        raise ProjectReviewError(field + " must name a file")
+    return normalized
+
+
+def _nonempty(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ProjectReviewError(field + " must be a non-empty string")
+    return value.strip()
+
+
+def _optional_string(value: Any, field: str) -> Optional[str]:
+    if value is None:
+        return None
+    return _nonempty(value, field)
+
+
+def _positive_int(value: Any, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ProjectReviewError(field + " must be a positive integer")
+    return value
+
+
+def _optional_positive_int(value: Any, field: str) -> Optional[int]:
+    if value is None:
+        return None
+    return _positive_int(value, field)
+
+
+def _sha256(value: Any, field: str) -> str:
+    text = _nonempty(value, field)
+    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
+        raise ProjectReviewError(field + " must be a lowercase sha256")
+    return text
+
+
+def _unique_strings(raw: Any, field: str) -> Tuple[str, ...]:
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ProjectReviewError(field + " must be a non-empty array")
+    result = tuple(_nonempty(value, field) for value in raw)
+    if len(set(result)) != len(result):
+        raise ProjectReviewError(field + " entries must be unique")
+    return result
+
+
+def _canonical_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

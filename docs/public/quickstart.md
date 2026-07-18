@@ -45,7 +45,9 @@ Copy `examples/task-capsule.example.json` outside the project. State one observa
 result, only its constraints and evidence inputs, exact deliverable paths, existing
 acceptance IDs, and smaller or equal limits. Every evidence input is an immutable file
 record with its current lowercase SHA-256. Represent a directory with a separately
-hash-bound manifest file; do not submit a mutable directory path as evidence.
+hash-bound manifest file; do not submit a mutable directory path as evidence. Evidence
+inputs and deliverable paths must be path-disjoint, including directory ancestors. A
+file expected to change belongs only in `deliverable_paths`, never in `evidence_inputs`.
 
 For a serial slice use `lanes: []` and set both agent limits to 1. For parallel work,
 declare at least two lanes; every lane must own disjoint deliverable paths and disjoint
@@ -101,3 +103,14 @@ The command first validates the current managed AGENTS block, managed Hook
 projection, and stable launcher files. It preserves unrelated user configuration,
 records the superseded manifest, and emits an immutable upgrade receipt. A reference
 is preserved as audit evidence; it is not cryptographic authentication of the Owner.
+
+If activation was created with an explicit `--governor-repo`, the Hook compares the
+active content-addressed runtime with that checkout before allowing writes in other
+governed projects. Source drift returns a runtime-upgrade denial; a missing bound
+checkout also fails closed. Run `default-upgrade` from the approved source checkout
+under an explicit Owner reference. The Governor repository itself remains exempt from
+recursive guarding so that this recovery path cannot deadlock.
+
+Standalone installations created without a Governor repository remain source-unbound:
+they validate the installed runtime and managed projections, but do not contact GitHub
+or infer that a newer remote version exists.

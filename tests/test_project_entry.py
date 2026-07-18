@@ -109,7 +109,6 @@ class ProjectEntryTests(unittest.TestCase):
             "constraints": ["Do not edit acceptance files"],
             "evidence_inputs": [
                 {"path": "README.md", "sha256": self.digest("README.md")},
-                {"path": "src/app.py", "sha256": self.digest("src/app.py")},
             ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],
@@ -278,6 +277,31 @@ class ProjectEntryTests(unittest.TestCase):
         second = prepare_task(second_path, state_root=self.state_root)
 
         self.assertNotEqual(first["task_hash"], second["task_hash"])
+
+    def test_prepare_rejects_deliverable_paths_overlapping_evidence_inputs(self):
+        self.enroll()
+        cases = (
+            ("exact", "src/app.py", "src/app.py"),
+            ("deliverable-parent", "src/", "src/app.py"),
+            ("evidence-parent", "README.md/generated", "README.md"),
+        )
+
+        for label, deliverable, evidence in cases:
+            with self.subTest(label=label):
+                raw = self.capsule(
+                    deliverable_paths=[deliverable],
+                    evidence_inputs=[
+                        {"path": evidence, "sha256": self.digest(evidence)}
+                    ],
+                )
+                path = self.root / f"overlapping-roles-{label}.json"
+                self.write_json(path, raw)
+
+                with self.assertRaisesRegex(
+                    ProjectEntryError,
+                    "invalid_capsule_mutable_deliverable_declared_as_evidence_input",
+                ):
+                    prepare_task(path, state_root=self.state_root)
 
     def test_prepare_rejects_incomplete_unknown_and_over_budget_capsules(self):
         self.enroll()

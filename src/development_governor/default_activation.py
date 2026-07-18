@@ -80,6 +80,40 @@ def _package_hash(source_package: Path) -> str:
     return digest.hexdigest()
 
 
+def bound_source_runtime_status(manifest: Mapping[str, Any]) -> Mapping[str, str]:
+    """Project the active runtime's parity with its explicitly bound source checkout."""
+
+    identity = manifest.get("governor_project_identity")
+    runtime = manifest.get("runtime")
+    if not isinstance(identity, Mapping):
+        return {"status": "unbound"}
+    if not isinstance(runtime, Mapping):
+        raise ActivationError("activation manifest is missing bound source metadata")
+    repo_path = identity.get("repo_path")
+    runtime_hash = runtime.get("package_hash")
+    if not isinstance(repo_path, str) or not repo_path:
+        raise ActivationError("activation manifest is missing bound source metadata")
+    if not isinstance(runtime_hash, str) or not runtime_hash:
+        raise ActivationError("activation manifest is missing bound source metadata")
+    source_package = (
+        Path(repo_path).expanduser().resolve() / "src" / "development_governor"
+    )
+    try:
+        available_hash = _package_hash(source_package)
+    except (ActivationError, OSError):
+        return {
+            "status": "source_unavailable",
+            "current_runtime_hash": runtime_hash,
+        }
+    return {
+        "status": (
+            "current" if available_hash == runtime_hash else "upgrade_required"
+        ),
+        "current_runtime_hash": runtime_hash,
+        "available_runtime_hash": available_hash,
+    }
+
+
 def _install_runtime(state_root: Path, source_package: Path) -> Mapping[str, str]:
     package_hash = _package_hash(source_package)
     runtime_root = state_root / "runtime" / package_hash

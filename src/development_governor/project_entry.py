@@ -556,6 +556,15 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
     deliverables = _path_array(raw["deliverable_paths"], "deliverable_paths")
     if not all(_inside_any(path, policy["allowed_paths"]) for path in deliverables):
         raise ProjectEntryError("deliverable_paths must remain inside project allowed_paths")
+    for deliverable in deliverables:
+        for evidence_input in evidence:
+            if _paths_overlap(deliverable, evidence_input["path"]):
+                raise ProjectEntryError(
+                    "invalid_capsule_mutable_deliverable_declared_as_evidence_input: "
+                    + deliverable
+                    + " overlaps "
+                    + evidence_input["path"]
+                )
     limits = _positive_limits(raw["limits"], "limits")
     for key, value in limits.items():
         if value > policy["limits"][key]:

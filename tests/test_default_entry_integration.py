@@ -109,10 +109,6 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
                     "path": "README.md",
                     "sha256": hashlib.sha256((self.repo / "README.md").read_bytes()).hexdigest(),
                 },
-                {
-                    "path": "src/app.py",
-                    "sha256": hashlib.sha256((self.repo / "src" / "app.py").read_bytes()).hexdigest(),
-                },
             ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],

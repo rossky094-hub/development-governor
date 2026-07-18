@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+import shutil
 import unittest
 
+from development_governor.default_activation import _package_hash
 from development_governor.hook_guard import evaluate_hook_event
 from development_governor.project_entry import canonical_project_identity, start_task
 from tests import test_project_entry as project_fixture
@@ -82,6 +84,64 @@ class HookGuardTests(unittest.TestCase):
                 now=101.0,
             ),
             {},
+        )
+
+    def test_external_mutation_requires_current_bound_runtime_source(self):
+        prepared = self.prepare()
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        governor_repo = self.root / "governor-source"
+        source_package = governor_repo / "src" / "development_governor"
+        source_package.mkdir(parents=True)
+        module = source_package / "module.py"
+        module.write_text("VALUE = 1\n", encoding="utf-8")
+        activation = self.state_root / "activation" / "current.json"
+        activation.parent.mkdir(parents=True)
+        activation.write_text(
+            json.dumps(
+                {
+                    "governor_project_identity": {
+                        "project_id": "bound-governor-source",
+                        "repo_path": str(governor_repo),
+                    },
+                    "runtime": {
+                        "package_hash": _package_hash(source_package),
+                        "launcher_path": str(self.root / "governor"),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        event = self.event(
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: src/app.py\n*** End Patch",
+        )
+
+        self.assertEqual(
+            evaluate_hook_event(event, state_root=self.state_root, now=101.0),
+            {},
+        )
+
+        module.write_text("VALUE = 2\n", encoding="utf-8")
+        stale = evaluate_hook_event(event, state_root=self.state_root, now=102.0)
+        self.assertNotEqual(stale, {}, "stale runtime source was allowed")
+        self.assertEqual(
+            stale["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+        self.assertIn(
+            "runtime upgrade",
+            stale["hookSpecificOutput"]["permissionDecisionReason"].lower(),
+        )
+
+        shutil.rmtree(source_package)
+        missing = evaluate_hook_event(event, state_root=self.state_root, now=103.0)
+        self.assertEqual(
+            missing["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+        self.assertIn(
+            "source is unavailable",
+            missing["hookSpecificOutput"]["permissionDecisionReason"].lower(),
         )
 
     def test_active_lease_enforces_apply_patch_paths_and_protected_acceptance(self):
@@ -208,7 +268,11 @@ class HookGuardTests(unittest.TestCase):
                 {
                     "governor_project_identity": dict(
                         canonical_project_identity(self.repo)
-                    )
+                    ),
+                    "runtime": {
+                        "package_hash": "stale-runtime",
+                        "launcher_path": str(self.root / "governor"),
+                    },
                 }
             ),
             encoding="utf-8",
@@ -230,8 +294,14 @@ class HookGuardTests(unittest.TestCase):
         activation.write_text(
             json.dumps(
                 {
-                    "governor_project_identity": {"project_id": "not-this-project"},
-                    "runtime": {"launcher_path": str(launcher)},
+                    "governor_project_identity": {
+                        "project_id": "not-this-project",
+                        "repo_path": str(self.root / "missing-governor-source"),
+                    },
+                    "runtime": {
+                        "launcher_path": str(launcher),
+                        "package_hash": "stale-runtime",
+                    },
                 }
             ),
             encoding="utf-8",

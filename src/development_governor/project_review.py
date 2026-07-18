@@ -22,6 +22,7 @@ from development_governor.runner import (
     _require_clean_git_worktree,
     _session_id_from_jsonl,
     _terminate_process_group,
+    _token_cap_is_observable,
     _token_usage_from_jsonl,
 )
 from development_governor.supervisor import supervise_root_process
@@ -539,7 +540,10 @@ class ProjectReviewGovernor:
         else:
             hard_controls.append("serial_multi_agent_disabled")
         if contract.max_observed_total_tokens is not None:
-            hard_controls.append("observed_token_cap")
+            if _token_cap_is_observable(token_usage):
+                hard_controls.append("observed_token_cap")
+            else:
+                soft_controls.append("observed_token_cap_unavailable")
 
         receipt = {
             "schema_version": "development-governor.project-review-run-receipt.v0",

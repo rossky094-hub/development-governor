@@ -514,7 +514,9 @@ class ProjectReviewTests(unittest.TestCase):
             print(json.dumps({"type": "thread.started", "thread_id": "review-session-1"}), flush=True)
             """
         )
-        contract = ProjectReviewContract.from_mapping(self.contract_mapping())
+        contract = ProjectReviewContract.from_mapping(
+            self.contract_mapping(max_observed_total_tokens=90)
+        )
 
         receipt = ProjectReviewGovernor(
             str(fake), state_root=self.state_root
@@ -526,7 +528,10 @@ class ProjectReviewTests(unittest.TestCase):
         self.assertEqual(receipt["token_usage"], {"status": "unavailable"})
         self.assertEqual(receipt["lineage"]["review_waves_spent"], 1)
         self.assertIn("serial_multi_agent_disabled", receipt["hard_controls"])
-        self.assertEqual(receipt["soft_controls"], [])
+        self.assertNotIn("observed_token_cap", receipt["hard_controls"])
+        self.assertEqual(
+            receipt["soft_controls"], ["observed_token_cap_unavailable"]
+        )
         self.assertEqual(
             receipt["authority_boundary"],
             {

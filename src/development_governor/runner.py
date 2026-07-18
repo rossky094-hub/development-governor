@@ -1113,9 +1113,12 @@ class DevelopmentGovernor:
         if contract.primary_mode == "product":
             hard_controls.append("product_change_deadline")
             hard_controls.append("post_acceptance_product_evidence_fuse")
-        if contract.max_observed_total_tokens is not None:
-            hard_controls.append("observed_token_cap")
         soft_controls = []
+        if contract.max_observed_total_tokens is not None:
+            if _token_cap_is_observable(token_usage):
+                hard_controls.append("observed_token_cap")
+            else:
+                soft_controls.append("observed_token_cap_unavailable")
         if contract.parallel_units:
             hard_controls.append("declared_parallel_unit_schema_gate")
             soft_controls.extend(
@@ -1428,7 +1431,23 @@ def _normalized_token_usage(value: Any) -> Optional[dict]:
         ):
             return None
         result[field] = token_count
+    if (
+        "total_tokens" not in result
+        and "input_tokens" in result
+        and "output_tokens" in result
+    ):
+        result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
     return result or None
+
+
+def _token_cap_is_observable(token_usage: Mapping[str, Any]) -> bool:
+    total_tokens = token_usage.get("total_tokens")
+    return (
+        token_usage.get("status") == "observed"
+        and isinstance(total_tokens, int)
+        and not isinstance(total_tokens, bool)
+        and total_tokens >= 0
+    )
 
 
 def _find_session_id(value: Any) -> Optional[str]:

@@ -8,6 +8,7 @@ import shlex
 import sys
 from typing import Any, Mapping, Optional
 
+from development_governor.default_activation import bound_source_runtime_status
 from development_governor.project_entry import (
     DEFAULT_STATE_ROOT,
     ProjectEntryError,
@@ -281,6 +282,20 @@ def evaluate_hook_event(
                 and governor_identity.get("project_id") == identity["project_id"]
             ):
                 return {}
+            source_status = bound_source_runtime_status(activation)
+            if source_status["status"] == "upgrade_required":
+                return _deny(
+                    "Runtime upgrade required: the active Development Governor runtime "
+                    "is stale relative to its bound source. Run default-upgrade from the "
+                    "approved Governor source checkout with explicit Owner authority "
+                    "before external project mutation."
+                )
+            if source_status["status"] == "source_unavailable":
+                return _deny(
+                    "Bound Development Governor source is unavailable; restore the "
+                    "approved source checkout or explicitly rebind and upgrade before "
+                    "external project mutation."
+                )
         decision = authorize_mutation(Path(cwd), state_root=state_root, now=now)
         if decision["allowed"]:
             scope_denial = _scope_denial(

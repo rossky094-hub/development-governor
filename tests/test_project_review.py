@@ -93,7 +93,15 @@ class ProjectReviewTests(unittest.TestCase):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
     def contract_mapping(self, **overrides):
-        lineage_root_id = "project-aware-review"
+        candidate_sha256 = self.digest(self.repo / "docs" / "candidate.md")
+        acceptance_targets = ["subject:implementation"]
+        owner_review_ref = "owner:review/candidate-v1"
+        lineage_root_id = development_governor.derive_project_review_campaign_id(
+            repo_path=self.repo,
+            candidate_sha256=candidate_sha256,
+            acceptance_target_scope_ids=acceptance_targets,
+            owner_review_authorization_ref=owner_review_ref,
+        )
         ledger = lineage_ledger_path(self.state_root, self.repo, lineage_root_id)
         data = {
             "schema_version": "development-governor.project-review-contract.v0",
@@ -108,11 +116,11 @@ class ProjectReviewTests(unittest.TestCase):
             "max_spawn_depth": 1,
             "review_mode": "full",
             "review_scope_id": "subject:spec-review",
-            "owner_review_authorization_ref": "owner:review/candidate-v1",
+            "owner_review_authorization_ref": owner_review_ref,
             "owner_revision_ref": None,
             "candidate": {
                 "path": "docs/candidate.md",
-                "sha256": self.digest(self.repo / "docs" / "candidate.md"),
+                "sha256": candidate_sha256,
             },
             "context_inputs": [
                 {
@@ -147,7 +155,7 @@ class ProjectReviewTests(unittest.TestCase):
                     },
                 ],
             },
-            "acceptance_target_scope_ids": ["subject:implementation"],
+            "acceptance_target_scope_ids": acceptance_targets,
             "review_scopes": [],
             "lineage": {
                 "lineage_root_id": lineage_root_id,
@@ -161,6 +169,25 @@ class ProjectReviewTests(unittest.TestCase):
             },
         }
         data.update(overrides)
+        derived_campaign_id = (
+            development_governor.derive_project_review_campaign_id(
+                repo_path=self.repo,
+                candidate_sha256=data["candidate"]["sha256"],
+                acceptance_target_scope_ids=data[
+                    "acceptance_target_scope_ids"
+                ],
+                owner_review_authorization_ref=data[
+                    "owner_review_authorization_ref"
+                ],
+            )
+        )
+        derived_ledger = lineage_ledger_path(
+            self.state_root, self.repo, derived_campaign_id
+        )
+        data["lineage"]["lineage_root_id"] = derived_campaign_id
+        data["lineage"]["ledger_sha256"] = lineage_ledger_sha256(
+            derived_ledger
+        )
         return data
 
     def fake_codex(self, body):
@@ -172,6 +199,41 @@ class ProjectReviewTests(unittest.TestCase):
         )
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
+
+    def segmented_scopes(self):
+        shared_context = ["docs/goal.md", "docs/baseline.md"]
+        return [
+            {
+                "kind": "independent",
+                "scope_id": "semantic",
+                "objective": "Attack semantic closure.",
+                "acceptance_id": "semantic-receipt",
+                "context_paths": shared_context,
+                "depends_on": [],
+                "max_elapsed_seconds": 10,
+                "max_observed_total_tokens": 100,
+            },
+            {
+                "kind": "independent",
+                "scope_id": "decision",
+                "objective": "Attack authority and route closure.",
+                "acceptance_id": "decision-receipt",
+                "context_paths": shared_context,
+                "depends_on": [],
+                "max_elapsed_seconds": 10,
+                "max_observed_total_tokens": 100,
+            },
+            {
+                "kind": "join",
+                "scope_id": "cross-scope-join",
+                "objective": "Attack contradictions across completed scopes.",
+                "acceptance_id": "cross-scope-join-receipt",
+                "context_paths": shared_context,
+                "depends_on": ["semantic", "decision"],
+                "max_elapsed_seconds": 10,
+                "max_observed_total_tokens": 100,
+            },
+        ]
 
     def test_contract_binds_candidate_context_and_external_reviewer_skill(self):
         contract = ProjectReviewContract.from_mapping(self.contract_mapping())
@@ -185,6 +247,43 @@ class ProjectReviewTests(unittest.TestCase):
         self.assertRegex(contract.context_hash, r"^[0-9a-f]{64}$")
         self.assertRegex(contract.skill_bundle_hash, r"^[0-9a-f]{64}$")
         self.assertEqual(contract.validate_material()["status"], "matched")
+
+    def test_campaign_identity_rejects_caller_selected_lineage_reset(self):
+        mapping = self.contract_mapping()
+        campaign_id = development_governor.derive_project_review_campaign_id(
+            repo_path=self.repo,
+            candidate_sha256=mapping["candidate"]["sha256"],
+            acceptance_target_scope_ids=mapping[
+                "acceptance_target_scope_ids"
+            ],
+            owner_review_authorization_ref=mapping[
+                "owner_review_authorization_ref"
+            ],
+        )
+        ledger = lineage_ledger_path(self.state_root, self.repo, campaign_id)
+        mapping["lineage"]["lineage_root_id"] = campaign_id
+        mapping["lineage"]["ledger_sha256"] = lineage_ledger_sha256(ledger)
+
+        contract = ProjectReviewContract.from_mapping(mapping)
+        self.assertEqual(contract.review_campaign_id, campaign_id)
+
+        reset = json.loads(json.dumps(mapping))
+        reset["lineage"]["lineage_root_id"] = "caller-selected-reset"
+        reset_ledger = lineage_ledger_path(
+            self.state_root, self.repo, "caller-selected-reset"
+        )
+        reset["lineage"]["ledger_sha256"] = lineage_ledger_sha256(reset_ledger)
+        with self.assertRaisesRegex(ProjectReviewError, "campaign identity"):
+            ProjectReviewContract.from_mapping(reset)
+
+        legacy = ProjectReviewContract.from_mapping(
+            reset, allow_legacy_lineage=True
+        )
+        with self.assertRaisesRegex(ProjectReviewError, "recovery-only"):
+            ProjectReviewGovernor(
+                str(self.root / "must-not-start-model"),
+                state_root=self.state_root,
+            ).run(legacy, self.root / "legacy-run-must-be-denied")
 
     def test_review_identity_binds_prompt_and_reviewer_execution_profile(self):
         baseline = ProjectReviewContract.from_mapping(self.contract_mapping())
@@ -395,49 +494,70 @@ class ProjectReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectReviewError, "one review wave"):
             ProjectReviewContract.from_mapping(excessive_budget)
 
-    def test_review_scopes_are_zero_or_independently_identified_parallel_lanes(self):
+    def test_review_scopes_form_two_level_independent_then_join_graph(self):
         one_scope = self.contract_mapping(
             review_scopes=[
                 {
+                    "kind": "independent",
                     "scope_id": "semantic",
                     "objective": "Attack semantic closure.",
                     "acceptance_id": "semantic-receipt",
+                    "context_paths": ["docs/goal.md", "docs/baseline.md"],
+                    "depends_on": [],
+                    "max_elapsed_seconds": 10,
+                    "max_observed_total_tokens": 100,
                 }
             ]
         )
-        with self.assertRaisesRegex(ProjectReviewError, "zero or at least two"):
+        with self.assertRaisesRegex(ProjectReviewError, "independent"):
             ProjectReviewContract.from_mapping(one_scope)
 
         parallel = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
             max_parallel_agents=2,
-            max_total_agents=2,
-            review_scopes=[
-                {
-                    "scope_id": "semantic",
-                    "objective": "Attack semantic closure.",
-                    "acceptance_id": "semantic-receipt",
-                },
-                {
-                    "scope_id": "decision",
-                    "objective": "Attack authority and route closure.",
-                    "acceptance_id": "decision-receipt",
-                },
-            ],
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
         )
         contract = ProjectReviewContract.from_mapping(parallel)
-        workspace = materialize_review_context(
-            contract, self.root / "parallel-review", review_batch_id="b" * 64
+        self.assertEqual([item.kind for item in contract.review_scopes], [
+            "independent", "independent", "join"
+        ])
+        self.assertEqual(
+            contract.review_scopes[-1].depends_on,
+            ("semantic", "decision"),
         )
-        command = list(build_project_review_command(contract, workspace))
-        normalized_prompt = " ".join(command[-1].split())
+        legacy_workspace = materialize_review_context(
+            contract,
+            self.root / "segmented-legacy-command",
+            review_batch_id="b" * 64,
+        )
+        with self.assertRaisesRegex(ProjectReviewError, "controller-managed"):
+            build_project_review_command(contract, legacy_workspace)
 
-        self.assertIn("--enable", command)
-        self.assertIn('"acceptance_id":"semantic-receipt"', normalized_prompt)
-        self.assertIn("fresh-context read-only worker", normalized_prompt)
-        self.assertIn("no descendants", normalized_prompt)
-        self.assertIn("maximum active logical agents: 2", normalized_prompt)
-        self.assertIn("maximum total logical agents: 2", normalized_prompt)
-        self.assertIn("maximum spawn depth: 1", normalized_prompt)
+        resume = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        resume["lineage"]["resume_from_reservation_id"] = "a" * 64
+        resume["lineage"]["resume_session_id"] = "legacy-session"
+        with self.assertRaisesRegex(ProjectReviewError, "checkpoint recovery"):
+            ProjectReviewContract.from_mapping(resume)
+
+        escaping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        escaping["review_scopes"][0]["scope_id"] = "../escape"
+        escaping["review_scopes"][2]["depends_on"][0] = "../escape"
+        with self.assertRaisesRegex(ProjectReviewError, "identifier"):
+            ProjectReviewContract.from_mapping(escaping)
 
     def test_incremental_review_requires_hash_bound_impact_material(self):
         incomplete = self.contract_mapping(
@@ -748,7 +868,7 @@ class ProjectReviewTests(unittest.TestCase):
         self.assertEqual(second, recovered)
         self.assertEqual(recovery_path.read_bytes(), first_recovery_bytes)
 
-    def test_parallel_review_cannot_accept_without_declared_scope_receipts(self):
+    def test_segmented_review_checkpoints_join_and_zero_model_reuse(self):
         fake = self.fake_codex(
             """
             import json
@@ -758,52 +878,296 @@ class ProjectReviewTests(unittest.TestCase):
             args = sys.argv[1:]
             context = Path(args[args.index("--cd") + 1])
             output = Path(args[args.index("--output-last-message") + 1])
-            manifest = json.loads((context / "REVIEW-MANIFEST.json").read_text())
-            output.write_text(json.dumps({
-                "candidate": {"path": manifest["candidate"]["path"], "hash": manifest["candidate"]["sha256"]},
-                "batch_id": manifest["review_batch_id"],
-                "acceptance_target_scope_ids": manifest["acceptance_target_scope_ids"],
+            manifest = json.loads((context / "SEGMENT-MANIFEST.json").read_text())
+            segment = manifest["segment"]
+            dependency_hashes = manifest["dependency_checkpoint_sha256s"]
+            if segment["kind"] == "join":
+                assert set(dependency_hashes) == {"semantic", "decision"}
+                assert (context / "dependencies" / "semantic.json").is_file()
+                assert (context / "dependencies" / "decision.json").is_file()
+            verdict = (
+                "targeted_revision_required"
+                if segment["scope_id"] == "semantic"
+                else "accepted_for_owner_review"
+            )
+            findings = []
+            if segment["scope_id"] == "semantic":
+                findings = [{
+                    "finding_id": "SEM-1",
+                    "severity": "important",
+                    "title": "Semantic witness missing",
+                    "location": "docs/candidate.md:1",
+                    "trigger": "The bounded witness is absent.",
+                    "consequence": "The claim is not reproducible.",
+                    "minimum_repair": "Add one executable witness.",
+                }]
+            receipt = {
+                "candidate": {
+                    "path": manifest["candidate"]["path"],
+                    "hash": manifest["candidate"]["sha256"],
+                },
+                "campaign_id": manifest["campaign_id"],
+                "segment_id": segment["scope_id"],
+                "acceptance_id": segment["acceptance_id"],
+                "dependency_checkpoint_sha256s": dependency_hashes,
                 "owner_review_authorization_ref": manifest["owner_review_authorization_ref"],
-                "review_budget_reservation_ref": manifest["review_batch_id"],
-                "review_mode": manifest["review_mode"],
-                "counterexample_summary": {},
-                "findings": [],
-                "independent_scopes": [],
-                "verdict": "accepted_for_owner_review",
+                "counterexample_summary": {
+                    "applicable_counterexamples": 1,
+                    "counterexample_blocked": 1,
+                    "counterexample_succeeded": 0,
+                    "not_run": 0,
+                    "not_applicable": 0,
+                },
+                "findings": findings,
+                "verdict": verdict,
                 "next_allowed_move": "owner_decision",
-                "can_claim": [],
+                "can_claim": ["segment review completed"],
                 "cannot_claim": ["Owner acceptance"],
-            }), encoding="utf-8")
-            print(json.dumps({"type": "thread.started", "thread_id": "parallel-review-session"}), flush=True)
+            }
+            encoded = json.dumps(receipt, separators=(",", ":"))
+            output.write_text(encoded, encoding="utf-8")
+            print(json.dumps({
+                "type": "thread.started",
+                "thread_id": "segment-" + segment["scope_id"],
+            }), flush=True)
+            print(json.dumps({
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": encoded},
+            }), flush=True)
+            print(json.dumps({
+                "type": "turn.completed",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            }), flush=True)
             """
         )
         mapping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
             max_parallel_agents=2,
-            max_total_agents=2,
-            review_scopes=[
-                {
-                    "scope_id": "semantic",
-                    "objective": "Attack semantic closure.",
-                    "acceptance_id": "semantic-receipt",
-                },
-                {
-                    "scope_id": "decision",
-                    "objective": "Attack authority closure.",
-                    "acceptance_id": "decision-receipt",
-                },
-            ],
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
         )
+        mapping["lineage"]["max_invocations"] = 3
         contract = ProjectReviewContract.from_mapping(mapping)
+        output_dir = self.root / "segmented-review"
 
         receipt = ProjectReviewGovernor(
             str(fake), state_root=self.state_root
-        ).run(contract, self.root / "incomplete-parallel-review")
+        ).run(contract, output_dir)
 
-        self.assertEqual(receipt["status"], "stopped")
-        self.assertEqual(receipt["reason"], "review_receipt_invalid")
-        self.assertIn("declared review scopes", receipt["review_receipt_error"])
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(receipt["campaign_id"], contract.review_campaign_id)
+        self.assertEqual(
+            receipt["review"]["verdict"], "targeted_revision_required"
+        )
+        self.assertEqual(receipt["model_invocations_started"], 3)
+        self.assertEqual(receipt["checkpoint_count"], 3)
+        self.assertEqual(
+            sorted(path.name for path in (output_dir / "checkpoints").glob("*.json")),
+            ["cross-scope-join.json", "decision.json", "semantic.json"],
+        )
         self.assertIn(
-            "native_worker_spawn_limits", receipt["soft_controls"]
+            "controller_managed_segment_processes", receipt["hard_controls"]
+        )
+
+        ledger = lineage_ledger_path(
+            self.state_root, self.repo, contract.review_campaign_id
+        )
+        retry_mapping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        retry_mapping["lineage"]["max_invocations"] = 3
+        retry_mapping["lineage"]["ledger_sha256"] = lineage_ledger_sha256(
+            ledger
+        )
+        retry_contract = ProjectReviewContract.from_mapping(retry_mapping)
+        reused = ProjectReviewGovernor(
+            str(fake), state_root=self.state_root
+        ).run(retry_contract, output_dir)
+        self.assertEqual(reused["status"], "complete")
+        self.assertEqual(reused["model_invocations_started"], 0)
+        self.assertEqual(reused["checkpoint_count"], 3)
+
+        semantic_checkpoint = output_dir / "checkpoints" / "semantic.json"
+        tampered = json.loads(semantic_checkpoint.read_text(encoding="utf-8"))
+        tampered["review"]["verdict"] = "accepted_for_owner_review"
+        semantic_checkpoint.write_text(json.dumps(tampered), encoding="utf-8")
+        with self.assertRaisesRegex(ProjectReviewError, "checkpoint review mismatch"):
+            ProjectReviewGovernor(
+                str(fake), state_root=self.state_root
+            ).run(retry_contract, output_dir)
+
+    def test_segmented_review_reruns_only_failed_segment_and_dependent_join(self):
+        fail_once = self.root / "decision-failed-once"
+        fake = self.fake_codex(
+            f"""
+            import json
+            from pathlib import Path
+            import sys
+
+            args = sys.argv[1:]
+            context = Path(args[args.index("--cd") + 1])
+            output = Path(args[args.index("--output-last-message") + 1])
+            manifest = json.loads((context / "SEGMENT-MANIFEST.json").read_text())
+            segment = manifest["segment"]
+            if segment["scope_id"] == "decision" and not Path({str(fail_once)!r}).exists():
+                Path({str(fail_once)!r}).write_text("failed", encoding="utf-8")
+                print(json.dumps({{
+                    "type": "thread.started",
+                    "thread_id": "failed-decision-session",
+                }}), flush=True)
+                raise SystemExit(2)
+            dependency_hashes = manifest["dependency_checkpoint_sha256s"]
+            if segment["kind"] == "join":
+                assert set(dependency_hashes) == {{"semantic", "decision"}}
+            receipt = {{
+                "candidate": {{
+                    "path": manifest["candidate"]["path"],
+                    "hash": manifest["candidate"]["sha256"],
+                }},
+                "campaign_id": manifest["campaign_id"],
+                "segment_id": segment["scope_id"],
+                "acceptance_id": segment["acceptance_id"],
+                "dependency_checkpoint_sha256s": dependency_hashes,
+                "owner_review_authorization_ref": manifest["owner_review_authorization_ref"],
+                "counterexample_summary": {{
+                    "applicable_counterexamples": 1,
+                    "counterexample_blocked": 1,
+                    "counterexample_succeeded": 0,
+                    "not_run": 0,
+                    "not_applicable": 0,
+                }},
+                "findings": [],
+                "verdict": "accepted_for_owner_review",
+                "next_allowed_move": "owner_decision",
+                "can_claim": ["segment review completed"],
+                "cannot_claim": ["Owner acceptance"],
+            }}
+            encoded = json.dumps(receipt, separators=(",", ":"))
+            output.write_text(encoded, encoding="utf-8")
+            print(json.dumps({{
+                "type": "thread.started",
+                "thread_id": "segment-" + segment["scope_id"],
+            }}), flush=True)
+            print(json.dumps({{
+                "type": "item.completed",
+                "item": {{"type": "agent_message", "text": encoded}},
+            }}), flush=True)
+            print(json.dumps({{
+                "type": "turn.completed",
+                "usage": {{"input_tokens": 10, "output_tokens": 5}},
+            }}), flush=True)
+            """
+        )
+        mapping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        mapping["lineage"]["max_invocations"] = 5
+        contract = ProjectReviewContract.from_mapping(mapping)
+        output_dir = self.root / "recoverable-segmented-review"
+
+        first = ProjectReviewGovernor(
+            str(fake), state_root=self.state_root
+        ).run(contract, output_dir)
+
+        self.assertEqual(first["status"], "incomplete")
+        self.assertEqual(first["model_invocations_started"], 2)
+        self.assertEqual(first["checkpoint_count"], 1)
+        semantic_checkpoint = output_dir / "checkpoints" / "semantic.json"
+        semantic_hash = self.digest(semantic_checkpoint)
+        self.assertFalse(
+            (output_dir / "checkpoints" / "cross-scope-join.json").exists()
+        )
+
+        ledger = lineage_ledger_path(
+            self.state_root, self.repo, contract.review_campaign_id
+        )
+        retry_mapping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        retry_mapping["lineage"]["max_invocations"] = 5
+        retry_mapping["lineage"]["ledger_sha256"] = lineage_ledger_sha256(
+            ledger
+        )
+        retry_contract = ProjectReviewContract.from_mapping(retry_mapping)
+        second = ProjectReviewGovernor(
+            str(fake), state_root=self.state_root
+        ).run(retry_contract, output_dir)
+
+        self.assertEqual(second["status"], "complete")
+        self.assertEqual(second["model_invocations_started"], 2)
+        self.assertEqual(second["checkpoint_count"], 3)
+        self.assertEqual(self.digest(semantic_checkpoint), semantic_hash)
+        self.assertEqual(
+            len(list((output_dir / "segments" / "semantic" / "attempts").iterdir())),
+            1,
+        )
+        self.assertEqual(
+            len(list((output_dir / "segments" / "decision" / "attempts").iterdir())),
+            2,
+        )
+        self.assertEqual(
+            len(list((output_dir / "segments" / "cross-scope-join" / "attempts").iterdir())),
+            1,
+        )
+
+    def test_segmented_prestart_failure_does_not_lose_review_wave_charge(self):
+        mapping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        mapping["lineage"]["max_invocations"] = 3
+        contract = ProjectReviewContract.from_mapping(mapping)
+        output_dir = self.root / "prestart-segment-failure"
+        missing = self.root / "missing-codex"
+
+        first = ProjectReviewGovernor(
+            str(missing), state_root=self.state_root
+        ).run(contract, output_dir)
+        self.assertEqual(first["model_invocations_started"], 0)
+        self.assertEqual(
+            first["lineage"]["settlement"]["projection"]["review_waves_spent"],
+            0,
+        )
+
+        ledger = lineage_ledger_path(
+            self.state_root, self.repo, contract.review_campaign_id
+        )
+        retry_mapping = self.contract_mapping(
+            max_elapsed_seconds=30,
+            max_observed_total_tokens=300,
+            max_parallel_agents=2,
+            max_total_agents=3,
+            review_scopes=self.segmented_scopes(),
+        )
+        retry_mapping["lineage"]["max_invocations"] = 3
+        retry_mapping["lineage"]["ledger_sha256"] = lineage_ledger_sha256(
+            ledger
+        )
+        retry = ProjectReviewGovernor(
+            str(missing), state_root=self.state_root
+        ).run(ProjectReviewContract.from_mapping(retry_mapping), output_dir)
+
+        self.assertEqual(
+            retry["lineage"]["reservation"]["projection"][
+                "review_waves_reserved"
+            ],
+            1,
         )
 
     def test_reviewer_cannot_redefine_its_frozen_context_or_schema(self):
@@ -867,7 +1231,7 @@ class ProjectReviewTests(unittest.TestCase):
         self.assertEqual(interrupted["lineage"]["review_waves_spent"], 1)
         prior_reservation = interrupted["lineage"]["reservation"]["reservation_id"]
         ledger = lineage_ledger_path(
-            self.state_root, self.repo, "project-aware-review"
+            self.state_root, self.repo, initial_contract.review_campaign_id
         )
         resume_mapping = self.contract_mapping()
         resume_mapping["lineage"]["ledger_sha256"] = lineage_ledger_sha256(ledger)
@@ -944,7 +1308,7 @@ class ProjectReviewTests(unittest.TestCase):
         output_dir = self.root / "already-exists"
         output_dir.mkdir()
         ledger = lineage_ledger_path(
-            self.state_root, self.repo, "project-aware-review"
+            self.state_root, self.repo, contract.review_campaign_id
         )
         empty_ledger_hash = lineage_ledger_sha256(ledger)
 
@@ -975,7 +1339,7 @@ class ProjectReviewTests(unittest.TestCase):
                 ).run(contract, self.root / "supervision-failure")
 
         ledger = lineage_ledger_path(
-            self.state_root, self.repo, "project-aware-review"
+            self.state_root, self.repo, contract.review_campaign_id
         )
         events = [
             json.loads(line)
@@ -1075,6 +1439,31 @@ class ProjectReviewTests(unittest.TestCase):
         recovered_contract, recovered_output = recover.call_args.args
         self.assertIsInstance(recovered_contract, ProjectReviewContract)
         self.assertEqual(recovered_output, self.root / "historical-review")
+
+    def test_cli_derives_campaign_identity_without_starting_a_model(self):
+        mapping = self.contract_mapping()
+        mapping["lineage"]["lineage_root_id"] = "caller-value-is-ignored"
+        contract_path = self.root / "campaign-contract.json"
+        contract_path.write_text(json.dumps(mapping), encoding="utf-8")
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            exit_code = main(["review-campaign-id", str(contract_path)])
+
+        payload = json.loads(stdout.getvalue())
+        expected = development_governor.derive_project_review_campaign_id(
+            repo_path=self.repo,
+            candidate_sha256=mapping["candidate"]["sha256"],
+            acceptance_target_scope_ids=mapping[
+                "acceptance_target_scope_ids"
+            ],
+            owner_review_authorization_ref=mapping[
+                "owner_review_authorization_ref"
+            ],
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["review_campaign_id"], expected)
+        self.assertRegex(payload["lineage_ledger_sha256"], r"^[0-9a-f]{64}$")
 
     def test_project_review_api_is_publicly_importable(self):
         self.assertIs(

@@ -22,6 +22,7 @@ from development_governor.project_review import (
     ProjectReviewError,
     ProjectReviewGovernor,
     build_project_review_command,
+    derive_project_review_campaign_id,
     materialize_review_context,
     recover_project_review_receipt,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "ProjectReviewError",
     "ProjectReviewGovernor",
     "build_project_review_command",
+    "derive_project_review_campaign_id",
     "materialize_review_context",
     "recover_project_review_receipt",
 ]

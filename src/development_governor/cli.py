@@ -50,6 +50,7 @@ from development_governor.project_review import (
     ProjectReviewContract,
     ProjectReviewError,
     ProjectReviewGovernor,
+    derive_project_review_campaign_id,
     recover_project_review_receipt,
 )
 
@@ -61,11 +62,15 @@ def _load_contract(path: str) -> RunContract:
     return RunContract.from_mapping(raw)
 
 
-def _load_project_review_contract(path: str) -> ProjectReviewContract:
+def _load_project_review_contract(
+    path: str, *, allow_legacy_lineage: bool = False
+) -> ProjectReviewContract:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ProjectReviewError("project review contract root must be a JSON object")
-    return ProjectReviewContract.from_mapping(raw)
+    return ProjectReviewContract.from_mapping(
+        raw, allow_legacy_lineage=allow_legacy_lineage
+    )
 
 
 def _require_external_contract_path(path: str, contract: RunContract) -> None:
@@ -131,6 +136,12 @@ def main(argv=None) -> int:
     review_spec.add_argument("contract")
     review_spec.add_argument("--output-dir", required=True)
     review_spec.add_argument("--codex", default="codex")
+
+    review_campaign_id = subparsers.add_parser(
+        "review-campaign-id",
+        help="derive the deterministic budget lineage for a review contract",
+    )
+    review_campaign_id.add_argument("contract")
 
     recover_review = subparsers.add_parser(
         "recover-review",
@@ -227,6 +238,46 @@ def main(argv=None) -> int:
             return hook_main()
         if args.command == "demo":
             payload = run_demo()
+        elif args.command == "review-campaign-id":
+            try:
+                raw = json.loads(Path(args.contract).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ProjectReviewError(
+                    "project review contract must be valid JSON"
+                ) from error
+            if not isinstance(raw, dict):
+                raise ProjectReviewError(
+                    "project review contract root must be a JSON object"
+                )
+            required = {
+                "repo_path",
+                "candidate",
+                "acceptance_target_scope_ids",
+                "owner_review_authorization_ref",
+            }
+            if not required.issubset(raw) or not isinstance(
+                raw.get("candidate"), dict
+            ) or "sha256" not in raw["candidate"]:
+                raise ProjectReviewError(
+                    "campaign identity requires repo, candidate hash, targets, and Owner review reference"
+                )
+            campaign_id = derive_project_review_campaign_id(
+                repo_path=Path(raw["repo_path"]),
+                candidate_sha256=raw["candidate"]["sha256"],
+                acceptance_target_scope_ids=raw[
+                    "acceptance_target_scope_ids"
+                ],
+                owner_review_authorization_ref=raw[
+                    "owner_review_authorization_ref"
+                ],
+            )
+            ledger_path = lineage_ledger_path(
+                DEFAULT_STATE_ROOT, Path(raw["repo_path"]), campaign_id
+            )
+            payload = {
+                "review_campaign_id": campaign_id,
+                "lineage_ledger_sha256": lineage_ledger_sha256(ledger_path),
+            }
         elif args.command == "review-spec":
             review_contract = _load_project_review_contract(args.contract)
             _require_external_contract_path(args.contract, review_contract)
@@ -234,7 +285,9 @@ def main(argv=None) -> int:
                 args.codex, state_root=DEFAULT_STATE_ROOT
             ).run(review_contract, Path(args.output_dir))
         elif args.command == "recover-review":
-            review_contract = _load_project_review_contract(args.contract)
+            review_contract = _load_project_review_contract(
+                args.contract, allow_legacy_lineage=True
+            )
             _require_external_contract_path(args.contract, review_contract)
             payload = recover_project_review_receipt(
                 review_contract, Path(args.output_dir)

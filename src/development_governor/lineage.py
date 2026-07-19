@@ -157,6 +157,33 @@ def lineage_ledger_sha256(path: Path) -> str:
     return hashlib.sha256(ledger.read_bytes()).hexdigest()
 
 
+def lineage_projection(path: Path) -> dict:
+    """Return the deterministic current budget projection without appending events."""
+
+    ledger_path = _ledger_path(path)
+    if not ledger_path.exists():
+        raw = b""
+    else:
+        with _locked_ledger(ledger_path) as ledger:
+            raw = _read_locked_bytes(ledger)
+    state = _rebuild(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    if state["metadata"] is None:
+        return {
+            "status": "uninitialized",
+            "ledger_sha256": digest,
+            "elapsed_seconds_spent": 0,
+            "invocations_spent": 0,
+            "review_waves_spent": 0,
+        }
+    projection = _projection(state)
+    return dict(
+        projection,
+        status="initialized",
+        ledger_sha256=digest,
+    )
+
+
 def reserve_lineage(
     policy: LineagePolicy,
     *,
@@ -164,6 +191,7 @@ def reserve_lineage(
     contract_hash: str,
     candidate_hash: str,
     requested_elapsed_seconds: int,
+    requested_invocations: int = 1,
     requested_review_waves: int,
     current_scope_id: Optional[str] = None,
     primary_mode: Optional[str] = None,
@@ -176,6 +204,9 @@ def reserve_lineage(
     candidate = _candidate_hash(candidate_hash)
     elapsed = _positive_int(
         requested_elapsed_seconds, "requested_elapsed_seconds"
+    )
+    invocations = _positive_int(
+        requested_invocations, "requested_invocations"
     )
     review_waves = _nonnegative_int(
         requested_review_waves, "requested_review_waves"
@@ -241,7 +272,7 @@ def reserve_lineage(
 
         if state["elapsed_seconds_spent"] + elapsed > policy.max_elapsed_seconds:
             raise LineageError("insufficient elapsed time budget")
-        if state["invocations_spent"] + 1 > policy.max_invocations:
+        if state["invocations_spent"] + invocations > policy.max_invocations:
             raise LineageError("insufficient invocation budget")
 
         base_review_limit = (
@@ -274,6 +305,7 @@ def reserve_lineage(
                 "owner_revision_ref": revision_ref,
                 "primary_mode": mode,
                 "requested_elapsed_seconds": elapsed,
+                "requested_invocations": invocations,
                 "requested_review_waves": review_waves,
                 "resume_from_reservation_id": resume_target,
                 "resume_session_id": policy.resume_session_id,
@@ -304,7 +336,7 @@ def reserve_lineage(
                 "owner_acceptance_ref": acceptance_ref,
                 "owner_revision_ref": revision_ref,
                 "requested_elapsed_seconds": elapsed,
-                "requested_invocations": 1,
+                "requested_invocations": invocations,
                 "requested_review_waves": review_waves,
                 "resume_from_reservation_id": resume_target,
                 "resume_session_id": policy.resume_session_id,
@@ -342,6 +374,7 @@ def settle_lineage(
     terminal_status: str,
     model_started: bool,
     actual_elapsed_seconds: float,
+    actual_invocations: Optional[int] = None,
     session_id: Optional[str],
 ) -> dict:
     reservation_id = _sha256(reservation_id, "reservation_id")
@@ -353,6 +386,16 @@ def settle_lineage(
     actual = _nonnegative_number(
         actual_elapsed_seconds, "actual_elapsed_seconds"
     )
+    if actual_invocations is None:
+        normalized_invocations = 1 if model_started else 0
+    else:
+        normalized_invocations = _nonnegative_int(
+            actual_invocations, "actual_invocations"
+        )
+    if model_started and normalized_invocations == 0:
+        raise LineageError("started model must charge at least one invocation")
+    if not model_started and normalized_invocations != 0:
+        raise LineageError("unstarted model cannot charge invocations")
     if session_id is None:
         normalized_session = None
     else:
@@ -379,6 +422,7 @@ def settle_lineage(
                 existing["terminal_status"] == terminal_status
                 and existing["model_started"] is model_started
                 and existing["actual_elapsed_seconds"] == actual
+                and existing["charged_invocations"] == normalized_invocations
                 and existing["session_id"] == normalized_session
             )
             if not same:
@@ -393,6 +437,10 @@ def settle_lineage(
             }
         if state["active_reservation_id"] != reservation_id:
             raise LineageError("lineage reservation is not active")
+        if normalized_invocations > reservation["requested_invocations"]:
+            raise LineageError(
+                "actual invocations exceed the active reservation"
+            )
         charged_elapsed = math.ceil(actual) if model_started else 0
         event = {
             "schema_version": SCHEMA_VERSION,
@@ -402,7 +450,7 @@ def settle_lineage(
             "model_started": model_started,
             "actual_elapsed_seconds": actual,
             "charged_elapsed_seconds": charged_elapsed,
-            "charged_invocations": 1 if model_started else 0,
+            "charged_invocations": normalized_invocations,
             "charged_review_waves": (
                 reservation["requested_review_waves"] if model_started else 0
             ),
@@ -536,8 +584,9 @@ def _rebuild(raw: bytes) -> dict:
             elapsed = _positive_int(
                 event.get("requested_elapsed_seconds"), "requested_elapsed_seconds"
             )
-            if event.get("requested_invocations") != 1:
-                raise LineageError("lineage reservation must reserve one invocation")
+            invocations = _positive_int(
+                event.get("requested_invocations"), "requested_invocations"
+            )
             reviews = _nonnegative_int(
                 event.get("requested_review_waves"), "requested_review_waves"
             )
@@ -583,7 +632,10 @@ def _rebuild(raw: bytes) -> dict:
             metadata = state["metadata"]
             if state["elapsed_seconds_spent"] + elapsed > metadata["max_elapsed_seconds"]:
                 raise LineageError("lineage ledger exceeds elapsed budget")
-            if state["invocations_spent"] + 1 > metadata["max_invocations"]:
+            if (
+                state["invocations_spent"] + invocations
+                > metadata["max_invocations"]
+            ):
                 raise LineageError("lineage ledger exceeds invocation budget")
             review_limit = (
                 metadata["max_review_waves"]
@@ -599,7 +651,7 @@ def _rebuild(raw: bytes) -> dict:
                 raise LineageError("lineage ledger consumed an unnecessary owner credit")
             normalized = dict(event)
             normalized["requested_elapsed_seconds"] = elapsed
-            normalized["requested_invocations"] = 1
+            normalized["requested_invocations"] = invocations
             normalized["requested_review_waves"] = reviews
             normalized["owner_review_credit_consumed"] = credit_consumed
             normalized["current_scope_id"] = scope_id
@@ -640,7 +692,13 @@ def _rebuild(raw: bytes) -> dict:
                         "interrupted lineage settlement requires session_id"
                     )
                 charged_elapsed = math.ceil(actual)
-                charged_invocations = 1
+                charged_invocations = _positive_int(
+                    event.get("charged_invocations"), "charged_invocations"
+                )
+                if charged_invocations > reservation["requested_invocations"]:
+                    raise LineageError(
+                        "lineage settlement exceeds reserved invocations"
+                    )
                 charged_reviews = reservation["requested_review_waves"]
             else:
                 if session is not None:
@@ -663,7 +721,7 @@ def _rebuild(raw: bytes) -> dict:
             state["active_reservation_id"] = None
             if started:
                 state["elapsed_seconds_spent"] += charged_elapsed
-                state["invocations_spent"] += 1
+                state["invocations_spent"] += charged_invocations
                 state["review_waves_spent"] += charged_reviews
                 if reservation["owner_review_credit_consumed"]:
                     state["spent_review_credit_count"] += 1

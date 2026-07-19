@@ -96,6 +96,18 @@ governor review-spec /outside/project-review-contract.json \
   --output-dir /outside/project-review-run
 ```
 
+Derive the required, non-caller-selectable budget lineage before constructing a new
+contract:
+
+```bash
+governor review-campaign-id /outside/project-review-contract.json
+```
+
+The ID binds the canonical Git identity, frozen candidate hash, normalized acceptance
+targets, and exact Owner review authorization reference. Changing prompts, model
+settings, context packs, output directories, or a caller-supplied lineage label cannot
+create a fresh review budget.
+
 If an older run wrote a schema-valid final review before terminal-only token usage
 caused the legacy runner to record `interrupted` and `review: null`, recover that
 existing output without launching another model:
@@ -110,10 +122,12 @@ message, repository nonmutation, token record, and output-last-message. It appen
 `review-recovery-receipt.json`; it does not rewrite the original terminal receipt or
 lineage ledger.
 
-The reviewer runs against a materialized read-only context and returns one
-schema-bound receipt for an external Owner decision. Serial review disables native
-multi-agent execution. Parallel review requires at least two independently identified
-review scopes and acceptance IDs; it is not created merely to add read-only probes.
+The serial route runs one reviewer against one materialized read-only context. A
+segmented route requires at least two independent segments plus one cross-scope join.
+The Governor, rather than a reviewer root, schedules bounded read-only model processes,
+writes one immutable checkpoint per valid segment, supplies those checkpoint files to
+the join, and deterministically aggregates the completed receipts. A retry skips valid
+checkpoints and runs only missing segments and their unresolved dependants.
 See the [project-aware review guide](docs/public/project-aware-spec-review.md) and
 [contract example](examples/project-review-capsule.example.json).
 
@@ -132,8 +146,9 @@ See the [project-aware review guide](docs/public/project-aware-spec-review.md) a
 - Optional root-process supervision, product-change deadlines, and observed token
   caps only when usage telemetry is available before terminal completion. Usage first
   reported by `turn.completed` is accounting evidence, not a live hard cap.
-- One hash-bound, project-aware Spec reviewer process with a machine-validated receipt,
-  one-wave lineage accounting, and same-session interruption recovery.
+- Hash-bound, project-aware Spec review with deterministic campaign identity,
+  one-wave lineage accounting, serial same-session recovery, and checkpointed
+  segmented recovery.
 
 ## What it does not control
 

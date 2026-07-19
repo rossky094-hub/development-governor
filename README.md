@@ -96,6 +96,20 @@ governor review-spec /outside/project-review-contract.json \
   --output-dir /outside/project-review-run
 ```
 
+If an older run wrote a schema-valid final review before terminal-only token usage
+caused the legacy runner to record `interrupted` and `review: null`, recover that
+existing output without launching another model:
+
+```bash
+governor recover-review /outside/project-review-contract.json \
+  --output-dir /outside/project-review-run
+```
+
+Recovery validates the frozen contract, context, schema, session, raw final agent
+message, repository nonmutation, token record, and output-last-message. It appends
+`review-recovery-receipt.json`; it does not rewrite the original terminal receipt or
+lineage ledger.
+
 The reviewer runs against a materialized read-only context and returns one
 schema-bound receipt for an external Owner decision. Serial review disables native
 multi-agent execution. Parallel review requires at least two independently identified
@@ -116,7 +130,8 @@ See the [project-aware review guide](docs/public/project-aware-spec-review.md) a
 - Native multi-agent work when two or more lanes have disjoint deliverables and
   independent acceptance IDs.
 - Optional root-process supervision, product-change deadlines, and observed token
-  caps when telemetry is actually available.
+  caps only when usage telemetry is available before terminal completion. Usage first
+  reported by `turn.completed` is accounting evidence, not a live hard cap.
 - One hash-bound, project-aware Spec reviewer process with a machine-validated receipt,
   one-wave lineage accounting, and same-session interruption recovery.
 
@@ -133,8 +148,9 @@ See the [project-aware review guide](docs/public/project-aware-spec-review.md) a
 - It validates reviewer context, topology, budget, nonmutation, and receipt identity;
   the dedicated reviewer agent, not the Governor, owns the semantic verdict.
 - Owner references are preserved and audited but not cryptographically authenticated.
-- Token telemetry is optional and may be unavailable. This beta makes no measured
-  cost-saving, quality-improvement, or productivity claim.
+- Token telemetry is optional and may be unavailable or terminal-only. Gross observed
+  throughput includes cached input and is not equivalent to billed/paid tokens. This
+  beta makes no measured cost-saving, quality-improvement, or productivity claim.
 - It does not make every task single-agent. Parallelism is admitted by independently
   verifiable lanes, not disabled globally.
 

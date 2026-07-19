@@ -548,6 +548,206 @@ class ProjectReviewTests(unittest.TestCase):
         ).stdout
         self.assertEqual(status, "")
 
+    def test_terminal_only_usage_overrun_preserves_completed_review(self):
+        fake = self.fake_codex(
+            """
+            import json
+            from pathlib import Path
+            import sys
+            import time
+
+            args = sys.argv[1:]
+            context = Path(args[args.index("--cd") + 1])
+            output = Path(args[args.index("--output-last-message") + 1])
+            manifest = json.loads((context / "REVIEW-MANIFEST.json").read_text())
+            review = {
+                "candidate": {
+                    "path": manifest["candidate"]["path"],
+                    "hash": manifest["candidate"]["sha256"],
+                },
+                "batch_id": manifest["review_batch_id"],
+                "acceptance_target_scope_ids": manifest["acceptance_target_scope_ids"],
+                "owner_review_authorization_ref": manifest["owner_review_authorization_ref"],
+                "review_budget_reservation_ref": manifest["review_batch_id"],
+                "review_mode": manifest["review_mode"],
+                "counterexample_summary": {
+                    "applicable_counterexamples": 1,
+                    "counterexample_blocked": 1,
+                    "counterexample_succeeded": 0,
+                    "not_run": 0,
+                    "not_applicable": 0,
+                },
+                "findings": [],
+                "independent_scopes": [],
+                "verdict": "accepted_for_owner_review",
+                "next_allowed_move": "owner_decision",
+                "can_claim": ["review output completed"],
+                "cannot_claim": ["Owner acceptance"],
+            }
+            encoded_review = json.dumps(review, separators=(",", ":"))
+            output.write_text(encoded_review, encoding="utf-8")
+            print(json.dumps({"type": "thread.started", "thread_id": "terminal-review-session"}), flush=True)
+            print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": encoded_review}}), flush=True)
+            print(json.dumps({
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 90,
+                    "output_tokens": 20,
+                    "reasoning_output_tokens": 5,
+                },
+            }), flush=True)
+            time.sleep(0.05)
+            """
+        )
+        contract = ProjectReviewContract.from_mapping(
+            self.contract_mapping(max_observed_total_tokens=90)
+        )
+
+        receipt = ProjectReviewGovernor(
+            str(fake), state_root=self.state_root
+        ).run(contract, self.root / "terminal-review")
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(receipt["review"]["verdict"], "accepted_for_owner_review")
+        self.assertEqual(
+            receipt["artifact_status"],
+            {"review_receipt_present": True, "turn_completed": True},
+        )
+        self.assertEqual(
+            receipt["review_validation_status"],
+            {"status": "valid", "error": None},
+        )
+        self.assertEqual(receipt["budget_status"]["status"], "overrun")
+        self.assertEqual(
+            receipt["budget_status"]["token_observability_mode"],
+            "terminal_only",
+        )
+        self.assertEqual(
+            receipt["budget_status"]["enforcement"],
+            "terminal_accounting_only",
+        )
+        self.assertNotIn("observed_token_cap", receipt["hard_controls"])
+        self.assertIn("terminal_token_accounting", receipt["soft_controls"])
+
+    def test_recovery_validates_legacy_final_output_without_model_rerun(self):
+        fake = self.fake_codex(
+            """
+            import json
+            from pathlib import Path
+            import sys
+
+            args = sys.argv[1:]
+            context = Path(args[args.index("--cd") + 1])
+            output = Path(args[args.index("--output-last-message") + 1])
+            manifest = json.loads((context / "REVIEW-MANIFEST.json").read_text())
+            review = {
+                "candidate": {
+                    "path": manifest["candidate"]["path"],
+                    "hash": manifest["candidate"]["sha256"],
+                },
+                "batch_id": manifest["review_batch_id"],
+                "acceptance_target_scope_ids": manifest["acceptance_target_scope_ids"],
+                "owner_review_authorization_ref": manifest["owner_review_authorization_ref"],
+                "review_budget_reservation_ref": manifest["review_batch_id"],
+                "review_mode": manifest["review_mode"],
+                "counterexample_summary": {
+                    "applicable_counterexamples": 1,
+                    "counterexample_blocked": 0,
+                    "counterexample_succeeded": 1,
+                    "not_run": 0,
+                    "not_applicable": 0,
+                },
+                "findings": [{
+                    "finding_id": "F-RECOVERY",
+                    "severity": "important",
+                    "title": "Recoverable finding",
+                    "location": "docs/candidate.md:1",
+                    "trigger": "A counterexample succeeds.",
+                    "consequence": "The candidate cannot pass.",
+                    "minimum_repair": "Close the counterexample.",
+                }],
+                "independent_scopes": [],
+                "verdict": "major_revision_required",
+                "next_allowed_move": "owner_decision",
+                "can_claim": ["one finding exists"],
+                "cannot_claim": ["Owner acceptance"],
+            }
+            encoded_review = json.dumps(review, separators=(",", ":"))
+            output.write_text(encoded_review, encoding="utf-8")
+            print(json.dumps({"type": "thread.started", "thread_id": "legacy-review-session"}), flush=True)
+            print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": encoded_review}}), flush=True)
+            print(json.dumps({
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 90,
+                    "output_tokens": 20,
+                    "reasoning_output_tokens": 5,
+                },
+            }), flush=True)
+            """
+        )
+        contract = ProjectReviewContract.from_mapping(
+            self.contract_mapping(max_observed_total_tokens=90)
+        )
+        output_dir = self.root / "legacy-review"
+        completed = ProjectReviewGovernor(
+            str(fake), state_root=self.state_root
+        ).run(contract, output_dir)
+        self.assertEqual(completed["status"], "complete")
+
+        terminal_path = output_dir / "terminal-receipt.json"
+        legacy_terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+        legacy_terminal.update(
+            {
+                "status": "interrupted",
+                "reason": "observed_token_budget_exhausted",
+                "exit_code": -15,
+                "review": None,
+                "review_receipt_error": None,
+                "review_validation_status": {
+                    "status": "not_validated",
+                    "error": None,
+                },
+            }
+        )
+        legacy_terminal["lineage"]["settlement"][
+            "terminal_status"
+        ] = "interrupted"
+        terminal_path.write_text(
+            json.dumps(legacy_terminal, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        original_terminal_bytes = terminal_path.read_bytes()
+        ledger_path = Path(legacy_terminal["lineage"]["ledger_path"])
+        original_ledger_bytes = ledger_path.read_bytes()
+
+        recovered = development_governor.recover_project_review_receipt(
+            contract, output_dir
+        )
+
+        self.assertEqual(recovered["status"], "recovered")
+        self.assertEqual(
+            recovered["reason"],
+            "valid_review_preceded_terminal_budget_observation",
+        )
+        self.assertEqual(
+            recovered["review"]["verdict"], "major_revision_required"
+        )
+        self.assertEqual(
+            recovered["review_validation_status"], {"status": "valid", "error": None}
+        )
+        self.assertEqual(terminal_path.read_bytes(), original_terminal_bytes)
+        self.assertEqual(ledger_path.read_bytes(), original_ledger_bytes)
+        recovery_path = output_dir / "review-recovery-receipt.json"
+        first_recovery_bytes = recovery_path.read_bytes()
+        second = development_governor.recover_project_review_receipt(
+            contract, output_dir
+        )
+        self.assertEqual(second, recovered)
+        self.assertEqual(recovery_path.read_bytes(), first_recovery_bytes)
+
     def test_parallel_review_cannot_accept_without_declared_scope_receipts(self):
         fake = self.fake_codex(
             """
@@ -840,6 +1040,41 @@ class ProjectReviewTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["status"], "complete")
         self.assertEqual(payload["review"]["verdict"], "accepted_for_owner_review")
+
+    def test_cli_exposes_zero_model_review_recovery(self):
+        contract_path = self.root / "recovery-contract.json"
+        contract_path.write_text(
+            json.dumps(self.contract_mapping(max_observed_total_tokens=90)),
+            encoding="utf-8",
+        )
+        expected = {
+            "schema_version": (
+                "development-governor.project-review-recovery-receipt.v0"
+            ),
+            "status": "recovered",
+        }
+        stdout = io.StringIO()
+
+        with patch(
+            "development_governor.cli.recover_project_review_receipt",
+            create=True,
+            return_value=expected,
+        ) as recover:
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "recover-review",
+                        str(contract_path),
+                        "--output-dir",
+                        str(self.root / "historical-review"),
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(stdout.getvalue()), expected)
+        recovered_contract, recovered_output = recover.call_args.args
+        self.assertIsInstance(recovered_contract, ProjectReviewContract)
+        self.assertEqual(recovered_output, self.root / "historical-review")
 
     def test_project_review_api_is_publicly_importable(self):
         self.assertIs(

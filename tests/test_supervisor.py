@@ -179,6 +179,40 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(result.timed_out)
         self.assertEqual((self.root / "raw-events.jsonl").read_bytes(), encoded_event)
 
+    def test_terminal_only_token_usage_is_accounting_not_a_live_stop(self):
+        event = {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 80,
+                "cached_input_tokens": 70,
+                "output_tokens": 20,
+                "total_tokens": 100,
+            },
+        }
+        encoded_event = json.dumps(event, separators=(",", ":")).encode() + b"\n"
+        process = self.spawn(
+            """
+            import os
+            import time
+            os.write(1, bytes.fromhex(__import__("sys").argv[1]))
+            time.sleep(0.05)
+            """,
+            encoded_event.hex(),
+        )
+
+        result = self.supervise(
+            process,
+            lambda: (),
+            max_observed_total_tokens=90,
+        )
+
+        self.assertIsNone(result.stop_reason)
+        self.assertEqual(result.token_observability_mode, "terminal_only")
+        self.assertTrue(result.token_budget_exceeded)
+        self.assertTrue(result.completion_event_observed)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual((self.root / "raw-events.jsonl").read_bytes(), encoded_event)
+
     def test_large_stdout_and_stderr_are_drained_without_deadlock(self):
         stdout_bytes = bytes(range(256)) * 4096
         stderr_bytes = bytes(reversed(range(256))) * 4096

@@ -13,6 +13,7 @@ from development_governor.lineage import (
     LineageError,
     LineagePolicy,
     lineage_ledger_path,
+    lineage_ledger_sha256,
     reserve_lineage,
     settle_lineage,
 )
@@ -22,10 +23,12 @@ from development_governor.runner import (
     _require_clean_git_worktree,
     _session_id_from_jsonl,
     _terminate_process_group,
-    _token_cap_is_observable,
     _token_usage_from_jsonl,
 )
-from development_governor.supervisor import supervise_root_process
+from development_governor.supervisor import (
+    codex_stream_observation,
+    supervise_root_process,
+)
 
 
 _CONTEXT_ROLES = {
@@ -469,6 +472,7 @@ class ProjectReviewGovernor:
         )
         session_id = _session_id_from_jsonl(raw_events)
         token_usage = _token_usage_from_jsonl(raw_events)
+        stream_observation = codex_stream_observation(raw_events)
         final_changes = _git_changed_paths(repo, baseline_head)
         context_unchanged = (
             _directory_hash(workspace.context_root)
@@ -540,10 +544,34 @@ class ProjectReviewGovernor:
         else:
             hard_controls.append("serial_multi_agent_disabled")
         if contract.max_observed_total_tokens is not None:
-            if _token_cap_is_observable(token_usage):
+            if stream_observation["token_observability_mode"] == "streaming":
                 hard_controls.append("observed_token_cap")
+            elif stream_observation["token_observability_mode"] == "terminal_only":
+                soft_controls.append("terminal_token_accounting")
             else:
                 soft_controls.append("observed_token_cap_unavailable")
+
+        observed_total = token_usage.get("total_tokens")
+        token_limit = contract.max_observed_total_tokens
+        token_overrun = (
+            token_limit is not None
+            and isinstance(observed_total, int)
+            and not isinstance(observed_total, bool)
+            and observed_total >= token_limit
+        )
+        if token_limit is None:
+            budget_state = "not_configured"
+            budget_enforcement = "not_configured"
+        elif stream_observation["token_observability_mode"] == "unavailable":
+            budget_state = "unavailable"
+            budget_enforcement = "unavailable"
+        else:
+            budget_state = "overrun" if token_overrun else "within_limit"
+            budget_enforcement = (
+                "live_hard_cap"
+                if stream_observation["token_observability_mode"] == "streaming"
+                else "terminal_accounting_only"
+            )
 
         receipt = {
             "schema_version": "development-governor.project-review-run-receipt.v0",
@@ -571,6 +599,33 @@ class ProjectReviewGovernor:
             },
             "review": review,
             "review_receipt_error": receipt_error,
+            "artifact_status": {
+                "review_receipt_present": workspace.review_receipt_path.is_file(),
+                "turn_completed": stream_observation[
+                    "completion_event_observed"
+                ],
+            },
+            "review_validation_status": {
+                "status": (
+                    "valid"
+                    if review is not None
+                    else "invalid"
+                    if receipt_error is not None
+                    else "not_validated"
+                ),
+                "error": receipt_error,
+            },
+            "budget_status": {
+                "status": budget_state,
+                "configured_token_limit": token_limit,
+                "observed_total_tokens": (
+                    observed_total if isinstance(observed_total, int) else None
+                ),
+                "token_observability_mode": stream_observation[
+                    "token_observability_mode"
+                ],
+                "enforcement": budget_enforcement,
+            },
             "lineage": {
                 "ledger_path": str(lineage_path),
                 "reservation": reservation,
@@ -587,6 +642,149 @@ class ProjectReviewGovernor:
         }
         _atomic_json_write(workspace.output_dir / "terminal-receipt.json", receipt)
         return receipt
+
+
+def recover_project_review_receipt(
+    contract: ProjectReviewContract, output_dir: Path
+) -> Mapping[str, Any]:
+    """Validate and append a recovery receipt for the terminal-usage race."""
+
+    if not isinstance(contract, ProjectReviewContract):
+        raise ProjectReviewError("contract must be a ProjectReviewContract")
+    workspace = _resume_workspace(contract, output_dir)
+    terminal_path = workspace.output_dir / "terminal-receipt.json"
+    raw_events_path = workspace.output_dir / "raw-events.jsonl"
+    if not terminal_path.is_file() or not raw_events_path.is_file():
+        raise ProjectReviewError(
+            "recovery requires the original terminal receipt and raw events"
+        )
+    terminal = _read_json_object(terminal_path, "terminal receipt")
+    if (
+        terminal.get("schema_version")
+        != "development-governor.project-review-run-receipt.v0"
+        or terminal.get("status") != "interrupted"
+        or terminal.get("reason") != "observed_token_budget_exhausted"
+        or terminal.get("review") is not None
+    ):
+        raise ProjectReviewError(
+            "recovery requires an interrupted terminal-budget review without a verdict"
+        )
+    exact_terminal_fields = {
+        "contract_hash": contract.contract_hash,
+        "review_identity_hash": contract.review_identity_hash,
+        "review_batch_id": workspace.review_batch_id,
+        "context_hash": contract.context_hash,
+        "skill_bundle_hash": contract.skill_bundle_hash,
+        "materialized_context_sha256": workspace.context_tree_sha256,
+        "output_schema_sha256": workspace.output_schema_sha256,
+    }
+    for field, expected in exact_terminal_fields.items():
+        if terminal.get(field) != expected:
+            raise ProjectReviewError("recovery terminal " + field + " mismatch")
+    if terminal.get("candidate") != {
+        "path": contract.candidate.path,
+        "sha256": contract.candidate.sha256,
+    }:
+        raise ProjectReviewError("recovery terminal candidate mismatch")
+    repository = terminal.get("repository")
+    if (
+        not isinstance(repository, dict)
+        or Path(str(repository.get("path"))).expanduser().resolve()
+        != Path(contract.repo_path)
+        or repository.get("changed_paths") != []
+    ):
+        raise ProjectReviewError(
+            "recovery requires bound governed-repository nonmutation evidence"
+        )
+    session_id = terminal.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ProjectReviewError("recovery terminal session_id is missing")
+    lineage = terminal.get("lineage")
+    if not isinstance(lineage, dict):
+        raise ProjectReviewError("recovery terminal lineage is missing")
+    ledger_path_raw = lineage.get("ledger_path")
+    settlement = lineage.get("settlement")
+    if (
+        not isinstance(ledger_path_raw, str)
+        or not isinstance(settlement, dict)
+        or settlement.get("terminal_status") != "interrupted"
+        or settlement.get("ledger_sha256_after")
+        != lineage_ledger_sha256(Path(ledger_path_raw))
+    ):
+        raise ProjectReviewError("recovery lineage settlement mismatch")
+
+    raw_events = raw_events_path.read_text(encoding="utf-8", errors="replace")
+    if _session_id_from_jsonl(raw_events) != session_id:
+        raise ProjectReviewError("recovery raw-event session mismatch")
+    token_usage = _token_usage_from_jsonl(raw_events)
+    if terminal.get("token_usage") != token_usage:
+        raise ProjectReviewError("recovery raw-event token usage mismatch")
+    observation = codex_stream_observation(raw_events)
+    if observation != {
+        "token_observability_mode": "terminal_only",
+        "completion_event_observed": True,
+    }:
+        raise ProjectReviewError(
+            "recovery requires terminal-only usage after a completed turn"
+        )
+    review = _load_and_validate_review_receipt(contract, workspace)
+    if _last_agent_message_json(raw_events) != review:
+        raise ProjectReviewError(
+            "recovery final agent message does not match review receipt"
+        )
+
+    token_limit = contract.max_observed_total_tokens
+    observed_total = token_usage.get("total_tokens")
+    if (
+        token_limit is None
+        or not isinstance(observed_total, int)
+        or isinstance(observed_total, bool)
+        or observed_total < token_limit
+    ):
+        raise ProjectReviewError("recovery terminal token budget was not exceeded")
+    recovery = {
+        "schema_version": (
+            "development-governor.project-review-recovery-receipt.v0"
+        ),
+        "status": "recovered",
+        "reason": "valid_review_preceded_terminal_budget_observation",
+        "contract_hash": contract.contract_hash,
+        "review_identity_hash": contract.review_identity_hash,
+        "review_batch_id": workspace.review_batch_id,
+        "session_id": session_id,
+        "original_terminal_receipt_sha256": _file_hash(terminal_path),
+        "raw_events_sha256": _file_hash(raw_events_path),
+        "review_receipt_sha256": _file_hash(workspace.review_receipt_path),
+        "materialized_context_sha256": workspace.context_tree_sha256,
+        "output_schema_sha256": workspace.output_schema_sha256,
+        "lineage_ledger_sha256": lineage_ledger_sha256(Path(ledger_path_raw)),
+        "artifact_status": {
+            "review_receipt_present": True,
+            "turn_completed": True,
+        },
+        "review_validation_status": {"status": "valid", "error": None},
+        "budget_status": {
+            "status": "overrun",
+            "configured_token_limit": token_limit,
+            "observed_total_tokens": observed_total,
+            "token_observability_mode": "terminal_only",
+            "enforcement": "terminal_accounting_only",
+        },
+        "review": review,
+        "authority_boundary": terminal.get("authority_boundary"),
+        "history_mutation": {
+            "terminal_receipt_modified": False,
+            "lineage_ledger_modified": False,
+        },
+    }
+    recovery_path = workspace.output_dir / "review-recovery-receipt.json"
+    if recovery_path.exists():
+        existing = _read_json_object(recovery_path, "review recovery receipt")
+        if existing != recovery:
+            raise ProjectReviewError("conflicting review recovery receipt exists")
+        return existing
+    _atomic_json_write(recovery_path, recovery)
+    return recovery
 
 
 def materialize_review_context(
@@ -862,6 +1060,42 @@ def _load_and_validate_review_receipt(
                 "blocked independent review requires an incomplete scope"
             )
     return raw
+
+
+def _read_json_object(path: Path, label: str) -> dict:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProjectReviewError(label + " must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise ProjectReviewError(label + " must be an object")
+    return value
+
+
+def _last_agent_message_json(raw_events: str) -> dict:
+    found = None
+    for line in raw_events.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            continue
+        try:
+            candidate = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            found = candidate
+    if found is None:
+        raise ProjectReviewError("recovery raw events lack a final JSON agent message")
+    return found
 
 
 def _resume_workspace(

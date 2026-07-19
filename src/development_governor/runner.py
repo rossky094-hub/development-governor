@@ -1115,8 +1115,10 @@ class DevelopmentGovernor:
             hard_controls.append("post_acceptance_product_evidence_fuse")
         soft_controls = []
         if contract.max_observed_total_tokens is not None:
-            if _token_cap_is_observable(token_usage):
+            if supervision.token_observability_mode == "streaming":
                 hard_controls.append("observed_token_cap")
+            elif supervision.token_observability_mode == "terminal_only":
+                soft_controls.append("terminal_token_accounting")
             else:
                 soft_controls.append("observed_token_cap_unavailable")
         if contract.parallel_units:
@@ -1194,6 +1196,13 @@ class DevelopmentGovernor:
                 ),
                 "max_observed_total_tokens": (
                     contract.max_observed_total_tokens
+                ),
+                "token_observability_mode": (
+                    supervision.token_observability_mode
+                ),
+                "token_budget_exceeded": supervision.token_budget_exceeded,
+                "completion_event_observed": (
+                    supervision.completion_event_observed
                 ),
             },
             "lineage": {
@@ -1438,16 +1447,6 @@ def _normalized_token_usage(value: Any) -> Optional[dict]:
     ):
         result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
     return result or None
-
-
-def _token_cap_is_observable(token_usage: Mapping[str, Any]) -> bool:
-    total_tokens = token_usage.get("total_tokens")
-    return (
-        token_usage.get("status") == "observed"
-        and isinstance(total_tokens, int)
-        and not isinstance(total_tokens, bool)
-        and total_tokens >= 0
-    )
 
 
 def _find_session_id(value: Any) -> Optional[str]:

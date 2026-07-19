@@ -50,6 +50,7 @@ from development_governor.project_review import (
     ProjectReviewContract,
     ProjectReviewError,
     ProjectReviewGovernor,
+    recover_project_review_receipt,
 )
 
 
@@ -130,6 +131,13 @@ def main(argv=None) -> int:
     review_spec.add_argument("contract")
     review_spec.add_argument("--output-dir", required=True)
     review_spec.add_argument("--codex", default="codex")
+
+    recover_review = subparsers.add_parser(
+        "recover-review",
+        help="validate a completed historical review without launching a model",
+    )
+    recover_review.add_argument("contract")
+    recover_review.add_argument("--output-dir", required=True)
 
     stage = subparsers.add_parser(
         "stage-skill", help="copy an installed Skill into a new Git candidate"
@@ -225,6 +233,12 @@ def main(argv=None) -> int:
             payload = ProjectReviewGovernor(
                 args.codex, state_root=DEFAULT_STATE_ROOT
             ).run(review_contract, Path(args.output_dir))
+        elif args.command == "recover-review":
+            review_contract = _load_project_review_contract(args.contract)
+            _require_external_contract_path(args.contract, review_contract)
+            payload = recover_project_review_receipt(
+                review_contract, Path(args.output_dir)
+            )
         elif args.command == "enroll":
             payload = enroll_project(
                 _json_source(args.policy, args.json_base64),

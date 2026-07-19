@@ -41,10 +41,11 @@ The contract binds all of the following before the model starts:
   limits.
 
 The lineage root is not a free label. `review-campaign-id` derives it from the
-canonical Git common directory, frozen candidate hash, normalized acceptance targets,
-and exact Owner review authorization reference. The derivation intentionally excludes
-prompt wording, model choice, context-pack composition, and output path so those
-execution details cannot reset the review-wave budget.
+canonical Git common directory, stable review scope ID, normalized acceptance targets,
+and exact Owner review authorization reference. Candidate path, candidate hash, prompt
+wording, model choice, context-pack composition, and output path are intentionally
+excluded from the campaign identity. They remain bound to each batch, but changing
+them cannot reset the review-wave budget.
 
 Conversation history is not a valid context role. Unlisted project files are not
 copied into the review workspace. The output directory must be outside the governed
@@ -90,9 +91,10 @@ The lineage must default to exactly one review wave. A serial reviewer interrupt
 may resume the same Codex session, materialized context, batch ID, and output
 directory; that consumes another invocation but not another review wave. Segmented
 review does not resume one opaque multi-agent session: it retains valid segment
-checkpoints and starts only missing segments under the same campaign. A new review
-wave after a revision requires a new candidate hash and a distinct external Owner
-review credit. The Governor never starts that wave automatically.
+checkpoints and starts only missing segments under the same campaign. A revised
+candidate remains in that campaign and must satisfy the existing Owner revision
+reference and review-credit controls. The Governor never starts a new wave
+automatically.
 
 If preflight or materialization fails before Codex starts, the reservation is either
 not created or is settled with zero charged invocations, elapsed time, and review

@@ -103,10 +103,11 @@ contract:
 governor review-campaign-id /outside/project-review-contract.json
 ```
 
-The ID binds the canonical Git identity, frozen candidate hash, normalized acceptance
-targets, and exact Owner review authorization reference. Changing prompts, model
-settings, context packs, output directories, or a caller-supplied lineage label cannot
-create a fresh review budget.
+The ID binds the canonical Git identity, stable review scope, normalized acceptance
+targets, and exact Owner review authorization reference. Candidate path and content
+remain batch-bound evidence but do not create a fresh budget when revised or moved.
+Changing prompts, model settings, context packs, output directories, or a
+caller-supplied lineage label also cannot reset the campaign.
 
 If an older run wrote a schema-valid final review before terminal-only token usage
 caused the legacy runner to record `interrupted` and `review: null`, recover that

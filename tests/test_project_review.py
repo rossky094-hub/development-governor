@@ -13,7 +13,13 @@ from unittest.mock import patch
 
 import development_governor
 from development_governor.cli import main
-from development_governor.lineage import lineage_ledger_path, lineage_ledger_sha256
+from development_governor.lineage import (
+    LineageError,
+    lineage_ledger_path,
+    lineage_ledger_sha256,
+    reserve_lineage,
+    settle_lineage,
+)
 from development_governor.project_review import (
     ProjectReviewContract,
     ProjectReviewError,
@@ -98,7 +104,7 @@ class ProjectReviewTests(unittest.TestCase):
         owner_review_ref = "owner:review/candidate-v1"
         lineage_root_id = development_governor.derive_project_review_campaign_id(
             repo_path=self.repo,
-            candidate_sha256=candidate_sha256,
+            review_scope_id="subject:spec-review",
             acceptance_target_scope_ids=acceptance_targets,
             owner_review_authorization_ref=owner_review_ref,
         )
@@ -172,7 +178,7 @@ class ProjectReviewTests(unittest.TestCase):
         derived_campaign_id = (
             development_governor.derive_project_review_campaign_id(
                 repo_path=self.repo,
-                candidate_sha256=data["candidate"]["sha256"],
+                review_scope_id=data["review_scope_id"],
                 acceptance_target_scope_ids=data[
                     "acceptance_target_scope_ids"
                 ],
@@ -252,7 +258,7 @@ class ProjectReviewTests(unittest.TestCase):
         mapping = self.contract_mapping()
         campaign_id = development_governor.derive_project_review_campaign_id(
             repo_path=self.repo,
-            candidate_sha256=mapping["candidate"]["sha256"],
+            review_scope_id=mapping["review_scope_id"],
             acceptance_target_scope_ids=mapping[
                 "acceptance_target_scope_ids"
             ],
@@ -284,6 +290,72 @@ class ProjectReviewTests(unittest.TestCase):
                 str(self.root / "must-not-start-model"),
                 state_root=self.state_root,
             ).run(legacy, self.root / "legacy-run-must-be-denied")
+
+    def test_campaign_identity_is_stable_across_candidate_content_revisions(self):
+        first_mapping = self.contract_mapping()
+        first_contract = ProjectReviewContract.from_mapping(first_mapping)
+        first_hash = first_mapping["candidate"]["sha256"]
+        first_campaign = first_mapping["lineage"]["lineage_root_id"]
+        ledger = lineage_ledger_path(
+            self.state_root, self.repo, first_campaign
+        )
+        reservation = reserve_lineage(
+            first_contract.lineage,
+            ledger_path=ledger,
+            contract_hash=first_contract.contract_hash,
+            candidate_hash=first_contract.candidate.sha256,
+            requested_elapsed_seconds=10,
+            requested_review_waves=1,
+            current_scope_id=first_contract.review_scope_id,
+            primary_mode="governance",
+            owner_acceptance_ref=None,
+            owner_revision_ref=None,
+        )
+        settle_lineage(
+            ledger,
+            reservation["reservation_id"],
+            terminal_status="complete",
+            model_started=True,
+            actual_elapsed_seconds=1,
+            session_id="first-review-session",
+        )
+
+        (self.repo / "docs" / "candidate.md").write_text(
+            "# Candidate\n\nA revised bounded capability.\n", encoding="utf-8"
+        )
+        revised_mapping = self.contract_mapping()
+
+        self.assertNotEqual(first_hash, revised_mapping["candidate"]["sha256"])
+        self.assertEqual(
+            first_campaign, revised_mapping["lineage"]["lineage_root_id"]
+        )
+        renamed = self.repo / "docs" / "renamed-candidate.md"
+        renamed.write_text(
+            "# Candidate\n\nA renamed bounded capability.\n", encoding="utf-8"
+        )
+        renamed_mapping = self.contract_mapping(
+            candidate={
+                "path": "docs/renamed-candidate.md",
+                "sha256": self.digest(renamed),
+            }
+        )
+        self.assertEqual(
+            first_campaign, renamed_mapping["lineage"]["lineage_root_id"]
+        )
+        revised_contract = ProjectReviewContract.from_mapping(revised_mapping)
+        with self.assertRaisesRegex(LineageError, "Owner authorization reference"):
+            reserve_lineage(
+                revised_contract.lineage,
+                ledger_path=ledger,
+                contract_hash=revised_contract.contract_hash,
+                candidate_hash=revised_contract.candidate.sha256,
+                requested_elapsed_seconds=10,
+                requested_review_waves=1,
+                current_scope_id=revised_contract.review_scope_id,
+                primary_mode="governance",
+                owner_acceptance_ref=None,
+                owner_revision_ref=None,
+            )
 
     def test_review_identity_binds_prompt_and_reviewer_execution_profile(self):
         baseline = ProjectReviewContract.from_mapping(self.contract_mapping())
@@ -1453,7 +1525,7 @@ class ProjectReviewTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         expected = development_governor.derive_project_review_campaign_id(
             repo_path=self.repo,
-            candidate_sha256=mapping["candidate"]["sha256"],
+            review_scope_id=mapping["review_scope_id"],
             acceptance_target_scope_ids=mapping[
                 "acceptance_target_scope_ids"
             ],

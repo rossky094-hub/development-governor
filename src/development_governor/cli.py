@@ -251,19 +251,17 @@ def main(argv=None) -> int:
                 )
             required = {
                 "repo_path",
-                "candidate",
+                "review_scope_id",
                 "acceptance_target_scope_ids",
                 "owner_review_authorization_ref",
             }
-            if not required.issubset(raw) or not isinstance(
-                raw.get("candidate"), dict
-            ) or "sha256" not in raw["candidate"]:
+            if not required.issubset(raw):
                 raise ProjectReviewError(
-                    "campaign identity requires repo, candidate hash, targets, and Owner review reference"
+                    "campaign identity requires repo, review scope, targets, and Owner review reference"
                 )
             campaign_id = derive_project_review_campaign_id(
                 repo_path=Path(raw["repo_path"]),
-                candidate_sha256=raw["candidate"]["sha256"],
+                review_scope_id=raw["review_scope_id"],
                 acceptance_target_scope_ids=raw[
                     "acceptance_target_scope_ids"
                 ],

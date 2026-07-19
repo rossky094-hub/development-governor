@@ -305,7 +305,7 @@ class ProjectReviewContract:
             )
         campaign_id = derive_project_review_campaign_id(
             repo_path=repo,
-            candidate_sha256=candidate.sha256,
+            review_scope_id=raw["review_scope_id"],
             acceptance_target_scope_ids=targets,
             owner_review_authorization_ref=raw[
                 "owner_review_authorization_ref"
@@ -364,7 +364,7 @@ class ProjectReviewContract:
     def review_campaign_id(self) -> str:
         return derive_project_review_campaign_id(
             repo_path=self.repo_path,
-            candidate_sha256=self.candidate.sha256,
+            review_scope_id=self.review_scope_id,
             acceptance_target_scope_ids=self.acceptance_target_scope_ids,
             owner_review_authorization_ref=(
                 self.owner_review_authorization_ref
@@ -746,7 +746,7 @@ class ProjectReviewGovernor:
 def derive_project_review_campaign_id(
     *,
     repo_path: Path,
-    candidate_sha256: str,
+    review_scope_id: str,
     acceptance_target_scope_ids,
     owner_review_authorization_ref: str,
 ) -> str:
@@ -773,7 +773,7 @@ def derive_project_review_campaign_id(
     common = common.resolve()
     if not common.is_dir():
         raise ProjectReviewError("Git common dir must be an existing directory")
-    candidate = _sha256(candidate_sha256, "candidate_sha256")
+    scope_id = _nonempty(review_scope_id, "review_scope_id")
     targets = sorted(
         _unique_strings(
             acceptance_target_scope_ids,
@@ -786,9 +786,9 @@ def derive_project_review_campaign_id(
     )
     return _canonical_hash(
         {
-            "schema_version": "development-governor.review-campaign-identity.v0",
+            "schema_version": "development-governor.review-campaign-identity.v1",
             "git_common_dir": str(common),
-            "candidate_sha256": candidate,
+            "review_scope_id": scope_id,
             "acceptance_target_scope_ids": targets,
             "owner_review_authorization_ref": owner_ref,
         }

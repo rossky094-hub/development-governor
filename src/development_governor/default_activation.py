@@ -80,6 +80,40 @@ def _package_hash(source_package: Path) -> str:
     return digest.hexdigest()
 
 
+def bound_source_runtime_status(manifest: Mapping[str, Any]) -> Mapping[str, str]:
+    """Project the active runtime's parity with its explicitly bound source checkout."""
+
+    identity = manifest.get("governor_project_identity")
+    runtime = manifest.get("runtime")
+    if not isinstance(identity, Mapping):
+        return {"status": "unbound"}
+    if not isinstance(runtime, Mapping):
+        raise ActivationError("activation manifest is missing bound source metadata")
+    repo_path = identity.get("repo_path")
+    runtime_hash = runtime.get("package_hash")
+    if not isinstance(repo_path, str) or not repo_path:
+        raise ActivationError("activation manifest is missing bound source metadata")
+    if not isinstance(runtime_hash, str) or not runtime_hash:
+        raise ActivationError("activation manifest is missing bound source metadata")
+    source_package = (
+        Path(repo_path).expanduser().resolve() / "src" / "development_governor"
+    )
+    try:
+        available_hash = _package_hash(source_package)
+    except (ActivationError, OSError):
+        return {
+            "status": "source_unavailable",
+            "current_runtime_hash": runtime_hash,
+        }
+    return {
+        "status": (
+            "current" if available_hash == runtime_hash else "upgrade_required"
+        ),
+        "current_runtime_hash": runtime_hash,
+        "available_runtime_hash": available_hash,
+    }
+
+
 def _install_runtime(state_root: Path, source_package: Path) -> Mapping[str, str]:
     package_hash = _package_hash(source_package)
     runtime_root = state_root / "runtime" / package_hash
@@ -143,6 +177,8 @@ def _managed_agents_block(launcher_path: str) -> str:
             "Read-only inspection, explanation, and status checks remain allowed.",
             f"Launcher: `{launcher_path}`",
             "Route: enroll (first project use) -> prepare -> start -> implement -> verify -> close.",
+            f"Frozen Spec review: `{launcher_path} review-spec <contract> --output-dir <outside-repo-dir>` launches one hash-bound project-aware read-only reviewer.",
+            "The reviewer owns semantic findings and verdict; Owner acceptance and implementation authorization remain external.",
             "Do not invent Owner authority, acceptance IDs, or acceptance evidence.",
             "Do not modify protected acceptance material. Do not claim completion before verify and close.",
             "Native multi-agent execution remains allowed only for declared independent deliverables with independent acceptance IDs.",

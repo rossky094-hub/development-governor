@@ -46,6 +46,13 @@ from development_governor.project_entry import (
     verify_task,
 )
 from development_governor.public_demo import run_demo
+from development_governor.project_review import (
+    ProjectReviewContract,
+    ProjectReviewError,
+    ProjectReviewGovernor,
+    derive_project_review_campaign_id,
+    recover_project_review_receipt,
+)
 
 
 def _load_contract(path: str) -> RunContract:
@@ -53,6 +60,17 @@ def _load_contract(path: str) -> RunContract:
     if not isinstance(raw, dict):
         raise ContractError("contract root must be a JSON object")
     return RunContract.from_mapping(raw)
+
+
+def _load_project_review_contract(
+    path: str, *, allow_legacy_lineage: bool = False
+) -> ProjectReviewContract:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ProjectReviewError("project review contract root must be a JSON object")
+    return ProjectReviewContract.from_mapping(
+        raw, allow_legacy_lineage=allow_legacy_lineage
+    )
 
 
 def _require_external_contract_path(path: str, contract: RunContract) -> None:
@@ -110,6 +128,27 @@ def main(argv=None) -> int:
     run.add_argument("contract")
     run.add_argument("--output-dir", required=True)
     run.add_argument("--codex", default="codex")
+
+    review_spec = subparsers.add_parser(
+        "review-spec",
+        help="run one hash-bound project-aware Spec reviewer",
+    )
+    review_spec.add_argument("contract")
+    review_spec.add_argument("--output-dir", required=True)
+    review_spec.add_argument("--codex", default="codex")
+
+    review_campaign_id = subparsers.add_parser(
+        "review-campaign-id",
+        help="derive the deterministic budget lineage for a review contract",
+    )
+    review_campaign_id.add_argument("contract")
+
+    recover_review = subparsers.add_parser(
+        "recover-review",
+        help="validate a completed historical review without launching a model",
+    )
+    recover_review.add_argument("contract")
+    recover_review.add_argument("--output-dir", required=True)
 
     stage = subparsers.add_parser(
         "stage-skill", help="copy an installed Skill into a new Git candidate"
@@ -199,6 +238,58 @@ def main(argv=None) -> int:
             return hook_main()
         if args.command == "demo":
             payload = run_demo()
+        elif args.command == "review-campaign-id":
+            try:
+                raw = json.loads(Path(args.contract).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ProjectReviewError(
+                    "project review contract must be valid JSON"
+                ) from error
+            if not isinstance(raw, dict):
+                raise ProjectReviewError(
+                    "project review contract root must be a JSON object"
+                )
+            required = {
+                "repo_path",
+                "review_scope_id",
+                "acceptance_target_scope_ids",
+                "owner_review_authorization_ref",
+            }
+            if not required.issubset(raw):
+                raise ProjectReviewError(
+                    "campaign identity requires repo, review scope, targets, and Owner review reference"
+                )
+            campaign_id = derive_project_review_campaign_id(
+                repo_path=Path(raw["repo_path"]),
+                review_scope_id=raw["review_scope_id"],
+                acceptance_target_scope_ids=raw[
+                    "acceptance_target_scope_ids"
+                ],
+                owner_review_authorization_ref=raw[
+                    "owner_review_authorization_ref"
+                ],
+            )
+            ledger_path = lineage_ledger_path(
+                DEFAULT_STATE_ROOT, Path(raw["repo_path"]), campaign_id
+            )
+            payload = {
+                "review_campaign_id": campaign_id,
+                "lineage_ledger_sha256": lineage_ledger_sha256(ledger_path),
+            }
+        elif args.command == "review-spec":
+            review_contract = _load_project_review_contract(args.contract)
+            _require_external_contract_path(args.contract, review_contract)
+            payload = ProjectReviewGovernor(
+                args.codex, state_root=DEFAULT_STATE_ROOT
+            ).run(review_contract, Path(args.output_dir))
+        elif args.command == "recover-review":
+            review_contract = _load_project_review_contract(
+                args.contract, allow_legacy_lineage=True
+            )
+            _require_external_contract_path(args.contract, review_contract)
+            payload = recover_project_review_receipt(
+                review_contract, Path(args.output_dir)
+            )
         elif args.command == "enroll":
             payload = enroll_project(
                 _json_source(args.policy, args.json_base64),
@@ -259,9 +350,14 @@ def main(argv=None) -> int:
             governor_repo = Path(args.governor_repo).expanduser() if args.governor_repo else None
             if governor_repo is None and (inferred_repo / ".git").exists():
                 governor_repo = inferred_repo
+            source_package = (
+                governor_repo / "src" / "development_governor"
+                if governor_repo is not None
+                else module_path.parent
+            )
             payload = default_upgrade(
                 codex_home=_codex_home(args.codex_home),
-                source_package=module_path.parent,
+                source_package=source_package,
                 governor_repo=governor_repo,
                 owner_authorization_ref=args.owner_authorization_ref,
             )
@@ -359,6 +455,7 @@ def main(argv=None) -> int:
         ActivationError,
         ContractError,
         ProjectEntryError,
+        ProjectReviewError,
         SkillCandidateError,
         json.JSONDecodeError,
         OSError,
@@ -370,6 +467,8 @@ def main(argv=None) -> int:
     if args.command == "verify" and payload.get("status") != "verification_passed":
         return 1
     if args.command == "check" and payload.get("status") != "check_passed":
+        return 1
+    if args.command == "review-spec" and payload.get("status") != "complete":
         return 1
     return 0
 

@@ -1,8 +1,14 @@
 {
-  "schema_version": "development-governor-task-capsule.v1",
+  "schema_version": "development-governor-task-capsule.v2",
   "repo_path": "/absolute/path/to/your-project",
   "owner_request_ref": "owner:request/replace-with-real-reference",
   "result": "Deliver one observable, bounded product capability.",
+  "primary_mode": "product",
+  "capability_transition": {
+    "capability_id": "replace-with-capability-id",
+    "from_state": "replace-with-observed-before-state",
+    "to_state": "replace-with-accepted-after-state"
+  },
   "constraints": [
     "Do not modify protected acceptance material.",
     "Do not claim completion before frozen verification passes."
@@ -23,6 +29,9 @@
   "deliverable_paths": [
     "src/feature.py",
     "tests/test_feature.py"
+  ],
+  "product_evidence_paths": [
+    "src/feature.py"
   ],
   "limits": {
     "max_attempts": 1,

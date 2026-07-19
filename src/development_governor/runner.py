@@ -1113,9 +1113,14 @@ class DevelopmentGovernor:
         if contract.primary_mode == "product":
             hard_controls.append("product_change_deadline")
             hard_controls.append("post_acceptance_product_evidence_fuse")
-        if contract.max_observed_total_tokens is not None:
-            hard_controls.append("observed_token_cap")
         soft_controls = []
+        if contract.max_observed_total_tokens is not None:
+            if supervision.token_observability_mode == "streaming":
+                hard_controls.append("observed_token_cap")
+            elif supervision.token_observability_mode == "terminal_only":
+                soft_controls.append("terminal_token_accounting")
+            else:
+                soft_controls.append("observed_token_cap_unavailable")
         if contract.parallel_units:
             hard_controls.append("declared_parallel_unit_schema_gate")
             soft_controls.extend(
@@ -1191,6 +1196,13 @@ class DevelopmentGovernor:
                 ),
                 "max_observed_total_tokens": (
                     contract.max_observed_total_tokens
+                ),
+                "token_observability_mode": (
+                    supervision.token_observability_mode
+                ),
+                "token_budget_exceeded": supervision.token_budget_exceeded,
+                "completion_event_observed": (
+                    supervision.completion_event_observed
                 ),
             },
             "lineage": {
@@ -1428,6 +1440,12 @@ def _normalized_token_usage(value: Any) -> Optional[dict]:
         ):
             return None
         result[field] = token_count
+    if (
+        "total_tokens" not in result
+        and "input_tokens" in result
+        and "output_tokens" in result
+    ):
+        result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
     return result or None
 
 

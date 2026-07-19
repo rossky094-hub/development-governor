@@ -22,6 +22,14 @@
   lease, rejects recognizable paths outside the task scope, and fails closed for an
   active-lease shell command whose write set cannot be established. Such commands may
   use the isolated, non-promoting `governor check` entry.
+- `review-spec` binds the candidate, closed project context, external reviewer Skill,
+  acceptance targets, agent topology, and one-wave lineage by content identity. It
+  copies only those files into a separate context, launches a read-only Codex reviewer,
+  probes the governed Git worktree for changes, and validates one schema-bound receipt.
+- Initial review workspace failures occur before reservation when predictable. An
+  unexpected materialization failure is settled as model-not-started and charges no
+  invocation, elapsed time, or review wave. An interrupted session can resume only the
+  same frozen review identity and batch.
 
 ## Intentionally not claimed
 
@@ -48,12 +56,23 @@ chose the right outcome, whether the acceptance test encodes the right product v
 or whether a malicious acceptance program is safe to execute. Run untrusted code in a
 real sandbox or disposable environment.
 
+The project-aware reviewer is still an LLM. The Governor can prove which files and
+Skill version were supplied and whether the receipt matches the frozen identity; it
+cannot prove that the reviewer understood the project, found every defect, or issued
+the correct semantic verdict. A Git status probe can detect persistent governed-tree
+changes but is not a complete audit of transient or absolute-path writes.
+
 ## Multi-agent boundary
 
 A serial TDD slice has one implementation lane and no automatic read-only probes or
 duplicate reviewers. A parallel capsule must declare at least two lanes with disjoint
 deliverables and acceptance IDs. That validates the root topology; native Codex worker
 spawn details remain partly dependent on the current Codex runtime.
+
+The same rule applies to Spec review. Serial review hard-disables `multi_agent`.
+Parallel review requires at least two declared scopes with unique acceptance IDs, and
+the terminal receipt must close every scope. The Governor validates this declared
+topology and receipt, but does not claim an OS-level count of every runtime worker.
 
 ## Experimental success criterion
 

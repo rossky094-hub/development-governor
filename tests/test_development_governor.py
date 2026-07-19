@@ -774,13 +774,13 @@ class DevelopmentGovernorTests(unittest.TestCase):
         self.assertTrue(receipt["product_evidence"])
         self.assertEqual(receipt["invocation_count"], 1)
 
-    def test_receipt_observes_unambiguous_direct_usage_object(self):
+    def test_receipt_derives_total_for_current_codex_usage_object(self):
         fake = self.fake_codex(
             """
             import json
             from pathlib import Path
             print(json.dumps({"type": "thread.started", "thread_id": "session-direct-usage"}), flush=True)
-            print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}}), flush=True)
+            print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 7, "cached_input_tokens": 6, "output_tokens": 3, "reasoning_output_tokens": 2}}), flush=True)
             Path("src/direct_usage.py").write_text("OBSERVED = True\\n", encoding="utf-8")
             """
         )
@@ -794,7 +794,9 @@ class DevelopmentGovernorTests(unittest.TestCase):
             {
                 "status": "observed",
                 "input_tokens": 7,
+                "cached_input_tokens": 6,
                 "output_tokens": 3,
+                "reasoning_output_tokens": 2,
                 "total_tokens": 10,
             },
         )
@@ -903,13 +905,13 @@ class DevelopmentGovernorTests(unittest.TestCase):
         self.assertFalse((self.repo / "outside.txt").exists())
         self.assertIsNone(receipt["verification"])
 
-    def test_observed_token_budget_stops_root_while_telemetry_is_available(self):
+    def test_observed_token_budget_stops_on_current_codex_usage_schema(self):
         fake = self.fake_codex(
             """
             import json
             import time
             print(json.dumps({"type": "thread.started", "thread_id": "session-token-cap"}), flush=True)
-            print(json.dumps({"usage": {"input_tokens": 80, "output_tokens": 20, "total_tokens": 100}}), flush=True)
+            print(json.dumps({"usage": {"input_tokens": 80, "cached_input_tokens": 70, "output_tokens": 20, "reasoning_output_tokens": 15}}), flush=True)
             time.sleep(10)
             """
         )
@@ -925,6 +927,10 @@ class DevelopmentGovernorTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "stopped")
         self.assertEqual(receipt["reason"], "observed_token_budget_exhausted")
         self.assertEqual(receipt["token_usage"]["total_tokens"], 100)
+        self.assertIn("observed_token_cap", receipt["hard_controls"])
+        self.assertNotIn(
+            "observed_token_cap_unavailable", receipt["soft_controls"]
+        )
         self.assertFalse(receipt["timed_out"])
 
     def test_observed_token_usage_cannot_regress_below_the_cap(self):
@@ -1243,7 +1249,7 @@ class DevelopmentGovernorTests(unittest.TestCase):
         )
 
         receipt = self.governor(fake).run(
-            self.contract(), self.root / "labels-run"
+            self.contract(max_observed_total_tokens=90), self.root / "labels-run"
         )
 
         self.assertIn("root_elapsed_cap", receipt["hard_controls"])
@@ -1252,6 +1258,8 @@ class DevelopmentGovernorTests(unittest.TestCase):
         self.assertIn("stage_capability_local_admission", receipt["hard_controls"])
         self.assertIn("owner_activated_gate_admission", receipt["hard_controls"])
         self.assertIn("post_acceptance_product_evidence_fuse", receipt["hard_controls"])
+        self.assertNotIn("observed_token_cap", receipt["hard_controls"])
+        self.assertIn("observed_token_cap_unavailable", receipt["soft_controls"])
         self.assertEqual(receipt["token_usage"], {"status": "unavailable"})
         written = json.loads((self.root / "labels-run" / "terminal-receipt.json").read_text())
         self.assertEqual(written, receipt)

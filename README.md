@@ -22,7 +22,7 @@ product evidence.
 Requires Python 3.9+ and Git.
 
 ```bash
-pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
+pipx install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.4
 governor demo
 ```
 
@@ -30,7 +30,7 @@ governor demo
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.3
+.venv/bin/pip install git+https://github.com/rossky094-hub/development-governor.git@v0.1.0-beta.4
 .venv/bin/governor demo
 ```
 
@@ -84,6 +84,54 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 [policy](examples/project-policy.example.json) and
 [task capsule](examples/task-capsule.example.json) templates.
 
+### Project-aware Spec review
+
+The optional `review-spec` route launches a dedicated reviewer agent; the Governor
+does not issue the semantic verdict itself. The contract supplies a hash-bound frozen
+candidate, closed project context, external reviewer Skill, one review-wave lineage,
+and explicit acceptance target scopes:
+
+```bash
+governor review-spec /outside/project-review-contract.json \
+  --output-dir /outside/project-review-run
+```
+
+Derive the required, non-caller-selectable budget lineage before constructing a new
+contract:
+
+```bash
+governor review-campaign-id /outside/project-review-contract.json
+```
+
+The ID binds the canonical Git identity, stable review scope, normalized acceptance
+targets, and exact Owner review authorization reference. Candidate path and content
+remain batch-bound evidence but do not create a fresh budget when revised or moved.
+Changing prompts, model settings, context packs, output directories, or a
+caller-supplied lineage label also cannot reset the campaign.
+
+If an older run wrote a schema-valid final review before terminal-only token usage
+caused the legacy runner to record `interrupted` and `review: null`, recover that
+existing output without launching another model:
+
+```bash
+governor recover-review /outside/project-review-contract.json \
+  --output-dir /outside/project-review-run
+```
+
+Recovery validates the frozen contract, context, schema, session, raw final agent
+message, repository nonmutation, token record, and output-last-message. It appends
+`review-recovery-receipt.json`; it does not rewrite the original terminal receipt or
+lineage ledger.
+
+The serial route runs one reviewer against one materialized read-only context. A
+segmented route requires at least two independent segments plus one cross-scope join.
+The Governor, rather than a reviewer root, schedules bounded read-only model processes,
+writes one immutable checkpoint per valid segment, supplies those checkpoint files to
+the join, and deterministically aggregates the completed receipts. A retry skips valid
+checkpoints and runs only missing segments and their unresolved dependants.
+See the [project-aware review guide](docs/public/project-aware-spec-review.md) and
+[contract example](examples/project-review-capsule.example.json).
+
 ## What it controls
 
 - External, append-only project policy and task state.
@@ -97,7 +145,11 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
 - Native multi-agent work when two or more lanes have disjoint deliverables and
   independent acceptance IDs.
 - Optional root-process supervision, product-change deadlines, and observed token
-  caps when telemetry is actually available.
+  caps only when usage telemetry is available before terminal completion. Usage first
+  reported by `turn.completed` is accounting evidence, not a live hard cap.
+- Hash-bound, project-aware Spec review with deterministic campaign identity,
+  one-wave lineage accounting, serial same-session recovery, and checkpointed
+  segmented recovery.
 
 ## What it does not control
 
@@ -109,9 +161,12 @@ See the [five-minute quickstart](docs/public/quickstart.md) and the annotated
   it does not confine malicious absolute writes to unrelated host paths.
 - It cannot guarantee that a specification is correct or that an accepted change is
   useful.
+- It validates reviewer context, topology, budget, nonmutation, and receipt identity;
+  the dedicated reviewer agent, not the Governor, owns the semantic verdict.
 - Owner references are preserved and audited but not cryptographically authenticated.
-- Token telemetry is optional and may be unavailable. This beta makes no measured
-  cost-saving, quality-improvement, or productivity claim.
+- Token telemetry is optional and may be unavailable or terminal-only. Gross observed
+  throughput includes cached input and is not equivalent to billed/paid tokens. This
+  beta makes no measured cost-saving, quality-improvement, or productivity claim.
 - It does not make every task single-agent. Parallelism is admitted by independently
   verifiable lanes, not disabled globally.
 
@@ -142,7 +197,10 @@ governor default-upgrade \
 
 The upgrade verifies the existing managed AGENTS/Hook projections and stable
 launcher hashes, preserves unrelated configuration, installs a content-addressed
-runtime, and writes an upgrade receipt. Disable it with:
+runtime, and writes an upgrade receipt. When activation is explicitly bound to a
+Governor source checkout, the Hook also denies external-project writes if that source
+has advanced past the active runtime or is unavailable. The Governor repository itself
+and the explicit upgrade route remain available for recovery. Disable it with:
 
 ```bash
 governor default-disable
@@ -150,7 +208,7 @@ governor default-disable
 
 ## Status
 
-`v0.1.0-beta.3` is a public experiment. The deterministic kernel and default-entry
+`v0.1.0-beta.4` is a public experiment. The deterministic kernel and default-entry
 path have local test coverage; live savings and broad compatibility have not been
 established. Please report a minimal reproduction through
 [GitHub Issues](https://github.com/rossky094-hub/development-governor/issues).

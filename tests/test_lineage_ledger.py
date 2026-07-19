@@ -93,6 +93,32 @@ class LineageLedgerTests(unittest.TestCase):
                 dict(raw, owner_review_credit={"credit_id": "credit-only"})
             )
 
+    def test_batched_reservation_charges_only_started_segment_invocations(self):
+        reservation = reserve_lineage(
+            self.policy(),
+            ledger_path=self.ledger,
+            contract_hash=self.contract_a,
+            candidate_hash=self.candidate_a,
+            requested_elapsed_seconds=30,
+            requested_invocations=3,
+            requested_review_waves=1,
+        )
+
+        self.assertEqual(reservation["projection"]["invocations_reserved"], 3)
+        settled = settle_lineage(
+            self.ledger,
+            reservation["reservation_id"],
+            terminal_status="stopped",
+            model_started=True,
+            actual_elapsed_seconds=5.2,
+            actual_invocations=2,
+            session_id=None,
+        )
+
+        self.assertEqual(settled["projection"]["invocations_spent"], 2)
+        self.assertEqual(settled["projection"]["invocations_remaining"], 2)
+        self.assertEqual(settled["projection"]["review_waves_spent"], 1)
+
     def test_candidate_change_does_not_reset_review_budget(self):
         first = self.reserve(self.policy(), reviews=1)
         self.settle(first, actual=1.1)

@@ -2,6 +2,34 @@
 
 All notable public changes are documented here.
 
+## Unreleased
+
+- Add `governor review-spec`, a hash-bound launcher for one dedicated project-aware
+  Spec reviewer agent; the Governor validates execution and receipt identity but does
+  not own the semantic verdict.
+- Materialize only declared project context and an external reviewer Skill into a
+  read-only review workspace, with candidate, context tree, schema, and Skill bundle
+  hashes frozen before review.
+- Default to one serial review wave, support declared independent review scopes, and
+  allow same-session interruption recovery without starting another review wave.
+- Prevent predictable workspace failures from reserving review budget and settle
+  unexpected pre-model materialization failures without charging the lineage.
+
+## 0.1.0b4 - 2026-07-18
+
+Deployment-parity and capsule-role hardening release.
+
+- Reject task capsules whose mutable deliverables overlap immutable evidence inputs,
+  including exact paths and ancestor/descendant directory relationships.
+- Project the active runtime against an explicitly bound local Governor source
+  checkout and deny external-project mutation when the runtime is stale.
+- Fail closed when an explicitly bound source checkout disappears while preserving
+  the Governor self-repair and explicit Owner-authorized upgrade routes.
+- Preserve standalone installed-package behavior: no bound source means no remote
+  version lookup, while content-addressed runtime integrity remains enforced.
+- Keep the beta boundary: this is not an OS sandbox, semantic correctness oracle,
+  Owner authenticator, or measured productivity claim.
+
 ## 0.1.0b3 - 2026-07-16
 
 Deterministic hardening and Skill-boundary release.

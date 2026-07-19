@@ -1,6 +1,7 @@
 """Online supervision for one binary-mode root process and its process group."""
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import selectors
@@ -18,6 +19,9 @@ class SupervisionResult:
     outside_paths_at_stop: Tuple[str, ...]
     product_change_observed_at_deadline: bool
     stream_truncated: bool
+    token_observability_mode: str
+    token_budget_exceeded: bool
+    completion_event_observed: bool
 
 
 def supervise_root_process(
@@ -61,6 +65,9 @@ def supervise_root_process(
     root_exit_seen_at: Optional[float] = None
     final_probe_done = False
     stream_truncated = False
+    token_observability_mode = "unavailable"
+    token_budget_exceeded = False
+    completion_event_observed = False
     stdout_observed = bytearray()
     token_checked_length = 0
 
@@ -169,6 +176,15 @@ def supervise_root_process(
                     and len(stdout_observed) != token_checked_length
                 ):
                     token_checked_length = len(stdout_observed)
+                    observation = codex_stream_observation(
+                        stdout_observed.decode("utf-8", errors="replace")
+                    )
+                    token_observability_mode = observation[
+                        "token_observability_mode"
+                    ]
+                    completion_event_observed = observation[
+                        "completion_event_observed"
+                    ]
                     try:
                         token_usage = token_usage_from_jsonl(
                             stdout_observed.decode("utf-8", errors="replace")
@@ -182,7 +198,11 @@ def supervise_root_process(
                             and not isinstance(total_tokens, bool)
                             and total_tokens >= max_observed_total_tokens
                         ):
-                            request_stop("observed_token_budget_exhausted", clock())
+                            token_budget_exceeded = True
+                            if token_observability_mode == "streaming":
+                                request_stop(
+                                    "observed_token_budget_exhausted", clock()
+                                )
 
                 now = clock()
                 elapsed = now - started_at
@@ -275,7 +295,50 @@ def supervise_root_process(
             product_change_observed_at_deadline
         ),
         stream_truncated=stream_truncated,
+        token_observability_mode=token_observability_mode,
+        token_budget_exceeded=token_budget_exceeded,
+        completion_event_observed=completion_event_observed,
     )
+
+
+def codex_stream_observation(raw: str) -> Mapping[str, Any]:
+    """Classify whether Codex token usage was live or terminal-only."""
+
+    streaming_usage = False
+    terminal_usage = False
+    completion_event_observed = False
+    for line in raw.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "turn.completed":
+            completion_event_observed = True
+        payload = item.get("payload")
+        if (
+            item_type == "event_msg"
+            and isinstance(payload, dict)
+            and payload.get("type") == "token_count"
+        ):
+            streaming_usage = True
+        if isinstance(item.get("usage"), dict):
+            if item_type == "turn.completed":
+                terminal_usage = True
+            else:
+                streaming_usage = True
+    if streaming_usage:
+        mode = "streaming"
+    elif terminal_usage:
+        mode = "terminal_only"
+    else:
+        mode = "unavailable"
+    return {
+        "token_observability_mode": mode,
+        "completion_event_observed": completion_event_observed,
+    }
 
 
 def _matches_any(paths, prefixes: Sequence[str]) -> bool:

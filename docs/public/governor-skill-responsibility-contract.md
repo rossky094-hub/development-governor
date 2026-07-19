@@ -13,10 +13,10 @@ artifacts, but they never acquire operational authority by describing it.
 
 | Actor | May produce | Must not produce |
 |---|---|---|
-| Development Governor | enrollment, content-bound task identity, lease decisions, isolated check/verification receipts, policy/runtime migration receipts, close/abort state | semantic correctness, product value, Owner identity authentication, reviewer verdicts |
+| Development Governor | enrollment, content-bound task/review identity, lease and review-budget decisions, isolated check/verification receipts, dedicated reviewer launch and receipt validation, policy/runtime migration receipts, close/abort state | semantic correctness, product value, Owner identity authentication, reviewer verdicts |
 | `authoring-high-stakes-specs` | a draft candidate, typed contract graph, explicit unknowns, failure/recovery closure | lease, commit permission, acceptance ID, Owner authority, review verdict |
 | `controlling-design-drift` | read-only findings, affected scopes, safe work remaining, missing obligations, recommended route | mutable ledgers, budgets, fuse state, `allow_controller_commit`, acceptance or stop authority |
-| `reviewing-specs-before-acceptance` | one hash-bound read-only verdict for declared acceptance targets | candidate repair, automatic re-review, implementation authorization |
+| dedicated reviewer agent using `reviewing-specs-before-acceptance` | one hash-bound read-only verdict for declared acceptance targets | candidate repair, automatic re-review, implementation authorization |
 | Owner | acceptance, route, exception, policy migration, runtime upgrade | none of these powers may be inferred from a non-empty reference alone |
 
 The Governor preserves Owner references but does not authenticate the principal behind
@@ -30,6 +30,17 @@ capsule; the drift analyzer runs only when its trigger applies; a frozen candida
 then receive one budgeted acceptance review and an external Owner decision. A later
 implementation uses a new Governor capsule. Authoring, review, and implementation do
 not share one continuous lease.
+
+For the review route, the Governor materializes only hash-bound project inputs and an
+external reviewer Skill, then launches one Codex root through `review-spec`. It checks
+the batch identity, declared independent scope receipts, repository nonmutation, and
+lineage settlement. The reviewer agent owns findings and verdict; the Governor cannot
+replace that verdict, convert it into Owner acceptance, or authorize implementation.
+
+An interrupted reviewer may resume the same session and frozen batch without spending
+a second review wave. A revised candidate is a new review wave and requires an Owner
+revision reference plus explicit review credit; no verdict automatically triggers
+repair or re-review.
 
 ## Execution boundary
 
@@ -75,6 +86,9 @@ references but does not authenticate the Owner or reviewer behind them.
    checked.
 5. A new Skill installation is impossible without an explicit flag and an external,
    hash-bound successful terminal receipt.
+6. A project-aware Spec review cannot silently expand its project context, replace its
+   reviewer Skill, invent acceptance targets, or turn a semantic verdict into Owner
+   authority.
 
 Passing these conditions does not prove that a specification is correct, the work is
 valuable, or the Owner made a good decision.

@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 
+import development_governor.default_activation as activation
 from development_governor.default_activation import (
     ActivationError,
     AGENTS_BEGIN,
@@ -57,6 +58,8 @@ class DefaultActivationTests(unittest.TestCase):
         self.assertIn("# Existing rules", agents)
         self.assertEqual(agents.count(AGENTS_BEGIN), 1)
         self.assertEqual(agents.count(AGENTS_END), 1)
+        self.assertIn("review-spec", agents)
+        self.assertIn("project-aware read-only reviewer", agents)
         self.assertEqual(hooks["custom"], {"preserve": True})
         self.assertIn("PostToolUse", hooks["hooks"])
         self.assertEqual(len(hooks["hooks"]["PreToolUse"]), 1)
@@ -113,6 +116,37 @@ class DefaultActivationTests(unittest.TestCase):
                 source_package=source_b,
                 governor_repo=self.governor_repo,
             )
+
+    def test_bound_source_runtime_status_detects_drift_and_missing_source(self):
+        repo = self.root / "governor-source"
+        source = repo / "src" / "development_governor"
+        source.parent.mkdir(parents=True)
+        shutil.copytree(self.source_package, source)
+        runtime_hash = activation._package_hash(source)
+        manifest = {
+            "governor_project_identity": {"repo_path": str(repo)},
+            "runtime": {"package_hash": runtime_hash},
+        }
+        project_status = getattr(activation, "bound_source_runtime_status", None)
+
+        self.assertIsNotNone(project_status, "bound source status projection is missing")
+        self.assertEqual(project_status(manifest)["status"], "current")
+
+        with (source / "cli.py").open("a", encoding="utf-8") as target:
+            target.write("\n# source advanced without runtime upgrade\n")
+        drift = project_status(manifest)
+        self.assertEqual(drift["status"], "upgrade_required")
+        self.assertEqual(drift["current_runtime_hash"], runtime_hash)
+        self.assertNotEqual(drift["available_runtime_hash"], runtime_hash)
+
+        shutil.rmtree(source)
+        missing = project_status(manifest)
+        self.assertEqual(missing["status"], "source_unavailable")
+        self.assertEqual(missing["current_runtime_hash"], runtime_hash)
+        self.assertEqual(
+            project_status({"governor_project_identity": None})["status"],
+            "unbound",
+        )
 
     def test_upgrade_preserves_unmanaged_edits_and_rejects_launcher_tampering(self):
         from development_governor.default_activation import default_upgrade

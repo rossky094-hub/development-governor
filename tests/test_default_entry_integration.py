@@ -253,6 +253,63 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
         self.assertEqual(upgraded["status"], "upgraded")
         self.assertTrue(Path(upgraded["upgrade_receipt"]).is_file())
 
+    def test_installed_launcher_upgrades_from_explicit_governor_repo(self):
+        from development_governor.default_activation import _package_hash
+
+        source_repo = self.root / "governor-source"
+        current_source = source_repo / "src" / "development_governor"
+        current_source.parent.mkdir(parents=True)
+        shutil.copytree(
+            self.project_root / "src" / "development_governor", current_source
+        )
+        subprocess.run(["git", "init", "-q", str(source_repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(source_repo), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source_repo), "config", "user.name", "Test User"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(source_repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(source_repo), "commit", "-qm", "current source"],
+            check=True,
+        )
+        old_source = self.root / "old-runtime"
+        shutil.copytree(current_source, old_source)
+        with (old_source / "cli.py").open("a", encoding="utf-8") as target:
+            target.write("\n# intentionally old installed runtime\n")
+        enabled = default_enable(
+            codex_home=self.codex_home,
+            source_package=old_source,
+            governor_repo=source_repo,
+        )
+
+        completed = subprocess.run(
+            [
+                enabled["launcher_path"],
+                "default-upgrade",
+                "--codex-home",
+                str(self.codex_home),
+                "--governor-repo",
+                str(source_repo),
+                "--owner-authorization-ref",
+                "owner:integration/approve-explicit-source-upgrade",
+            ],
+            cwd=self.project_root,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.returncode, 0, msg=completed.stdout + "\n" + completed.stderr
+        )
+        upgraded = json.loads(completed.stdout)
+        self.assertEqual(upgraded["status"], "upgraded")
+        self.assertEqual(upgraded["runtime_hash"], _package_hash(current_source))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -285,9 +285,14 @@ def main(argv=None) -> int:
             governor_repo = Path(args.governor_repo).expanduser() if args.governor_repo else None
             if governor_repo is None and (inferred_repo / ".git").exists():
                 governor_repo = inferred_repo
+            source_package = (
+                governor_repo / "src" / "development_governor"
+                if governor_repo is not None
+                else module_path.parent
+            )
             payload = default_upgrade(
                 codex_home=_codex_home(args.codex_home),
-                source_package=module_path.parent,
+                source_package=source_package,
                 governor_repo=governor_repo,
                 owner_authorization_ref=args.owner_authorization_ref,
             )

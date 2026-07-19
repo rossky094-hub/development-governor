@@ -94,16 +94,23 @@ def _run_demo(root: Path) -> Dict[str, Any]:
     )
     prepared = prepare_task(
         {
-            "schema_version": "development-governor-task-capsule.v1",
+            "schema_version": "development-governor-task-capsule.v2",
             "repo_path": str(repo),
             "owner_request_ref": "demo:bounded-product-slice",
             "result": "Change the demo product value from before to after.",
+            "primary_mode": "product",
+            "capability_transition": {
+                "capability_id": "demo-product-value",
+                "from_state": "before",
+                "to_state": "after",
+            },
             "constraints": ["Do not modify the frozen acceptance script."],
             "evidence_inputs": [
                 {"path": "acceptance/check.py", "sha256": acceptance_sha256}
             ],
             "acceptance_ids": ["demo-acceptance"],
             "deliverable_paths": ["src/value.txt"],
+            "product_evidence_paths": ["src/value.txt"],
             "limits": limits,
             "lanes": [],
         },

@@ -99,10 +99,16 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
 
     def capsule(self):
         return {
-            "schema_version": "development-governor-task-capsule.v1",
+            "schema_version": "development-governor-task-capsule.v2",
             "repo_path": str(self.repo),
             "owner_request_ref": "codex:user-turn/integration",
             "result": "Keep one executable product slice working",
+            "primary_mode": "product",
+            "capability_transition": {
+                "capability_id": "integration-product",
+                "from_state": "baseline",
+                "to_state": "changed",
+            },
             "constraints": ["Acceptance files are frozen"],
             "evidence_inputs": [
                 {
@@ -112,6 +118,7 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
             ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],
+            "product_evidence_paths": ["src/"],
             "limits": {
                 "max_attempts": 1,
                 "max_review_waves": 0,
@@ -167,6 +174,7 @@ class DefaultEntryIntegrationTests(unittest.TestCase):
         self.assertEqual(checked["status"], "check_passed")
         self.assertEqual(checked["execution_mode"], "isolated_snapshot")
         self.assertEqual((self.repo / "src" / "app.py").read_bytes(), original)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
         self.assertEqual(self.call("verify", "--repo", str(self.repo))["status"], "verification_passed")
         self.assertEqual(self.call("close", "--repo", str(self.repo))["status"], "closed")
         denied_after = self.call("hook-guard", input_text=json.dumps(self.hook_event()))

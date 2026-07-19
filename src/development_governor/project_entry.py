@@ -20,7 +20,8 @@ DEFAULT_STATE_ROOT = Path(
     )
 ).expanduser()
 POLICY_SCHEMA = "development-governor-project-policy.v0"
-TASK_SCHEMA = "development-governor-task-capsule.v1"
+TASK_SCHEMA = "development-governor-task-capsule.v2"
+LEGACY_TASK_SCHEMA = "development-governor-task-capsule.v1"
 
 
 class ProjectEntryError(ValueError):
@@ -114,6 +115,40 @@ def _string_array(value: Any, label: str, *, allow_empty: bool = False) -> Tuple
     if len(result) != len(set(result)):
         raise ProjectEntryError(f"{label} entries must be unique")
     return result
+
+
+def _capability_transition(value: Any, primary_mode: str) -> Optional[Mapping[str, str]]:
+    if primary_mode != "product":
+        if value is not None:
+            raise ProjectEntryError(
+                "capability_transition must be null outside product mode"
+            )
+        return None
+    if not isinstance(value, Mapping):
+        raise ProjectEntryError(
+            "product mode requires a capability_transition object"
+        )
+    _require_exact_keys(
+        value,
+        {"capability_id", "from_state", "to_state"},
+        "capability_transition",
+    )
+    transition = {
+        "capability_id": _nonempty_string(
+            value["capability_id"], "capability_transition.capability_id"
+        ),
+        "from_state": _nonempty_string(
+            value["from_state"], "capability_transition.from_state"
+        ),
+        "to_state": _nonempty_string(
+            value["to_state"], "capability_transition.to_state"
+        ),
+    }
+    if transition["from_state"] == transition["to_state"]:
+        raise ProjectEntryError(
+            "capability_transition must declare different from_state and to_state"
+        )
+    return transition
 
 
 def _validated_evidence_inputs(value: Any, repo: Path) -> Tuple[Mapping[str, str], ...]:
@@ -529,10 +564,13 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         "repo_path",
         "owner_request_ref",
         "result",
+        "primary_mode",
+        "capability_transition",
         "constraints",
         "evidence_inputs",
         "acceptance_ids",
         "deliverable_paths",
+        "product_evidence_paths",
         "limits",
         "lanes",
     }
@@ -544,6 +582,12 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
     if identity["project_id"] != policy["project_identity"]["project_id"]:
         raise ProjectEntryError("task capsule repository is not the enrolled project")
     result = _nonempty_string(raw["result"], "result")
+    primary_mode = _nonempty_string(raw["primary_mode"], "primary_mode")
+    if primary_mode not in {"research", "product", "governance"}:
+        raise ProjectEntryError(
+            "primary_mode must be research, product, or governance"
+        )
+    transition = _capability_transition(raw["capability_transition"], primary_mode)
     constraints = _string_array(raw["constraints"], "constraints")
     evidence = _validated_evidence_inputs(raw["evidence_inputs"], Path(identity["repo_path"]))
     acceptance_ids = _string_array(raw["acceptance_ids"], "acceptance_ids")
@@ -556,6 +600,24 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
     deliverables = _path_array(raw["deliverable_paths"], "deliverable_paths")
     if not all(_inside_any(path, policy["allowed_paths"]) for path in deliverables):
         raise ProjectEntryError("deliverable_paths must remain inside project allowed_paths")
+    product_paths = _path_array(
+        raw["product_evidence_paths"],
+        "product_evidence_paths",
+        allow_empty=True,
+    )
+    if primary_mode == "product":
+        if not product_paths:
+            raise ProjectEntryError(
+                "product mode requires non-empty product_evidence_paths"
+            )
+        if not all(_inside_any(path, deliverables) for path in product_paths):
+            raise ProjectEntryError(
+                "product_evidence_paths must remain inside deliverable_paths"
+            )
+    elif product_paths:
+        raise ProjectEntryError(
+            "product_evidence_paths must be empty outside product mode"
+        )
     for deliverable in deliverables:
         for evidence_input in evidence:
             if _paths_overlap(deliverable, evidence_input["path"]):
@@ -621,13 +683,21 @@ def _validated_task(raw: Mapping[str, Any], enrolled: Mapping[str, Any]) -> Mapp
         "policy_hash": enrolled["policy_hash"],
         "owner_request_ref": _nonempty_string(raw["owner_request_ref"], "owner_request_ref"),
         "result": result,
+        "primary_mode": primary_mode,
+        "capability_transition": dict(transition) if transition is not None else None,
         "constraints": list(constraints),
         "evidence_inputs": [dict(item) for item in evidence],
         "acceptance_ids": list(acceptance_ids),
         "deliverable_paths": list(deliverables),
-        "baseline_product_tree_hash": _path_set_hash(
+        "product_evidence_paths": list(product_paths),
+        "baseline_deliverable_tree_hash": _path_set_hash(
             Path(identity["repo_path"]), deliverables
         ),
+        "baseline_product_tree_hash": _path_set_hash(
+            Path(identity["repo_path"]), product_paths
+        )
+        if product_paths
+        else None,
         "limits": limits,
         "lanes": lanes,
     }
@@ -675,6 +745,8 @@ def load_prepared_task(task_ref: str, *, state_root: Path = DEFAULT_STATE_ROOT) 
         task = _load_json(path)
     if _sha256(task) != path.parent.name:
         raise ProjectEntryError("prepared task hash mismatch")
+    if task.get("schema_version") not in {TASK_SCHEMA, LEGACY_TASK_SCHEMA}:
+        raise ProjectEntryError("unsupported stored task schema")
     return task
 
 
@@ -1019,10 +1091,64 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
         results.append(result)
         all_passed = all_passed and result["returncode"] == 0
     timestamp = _clock_value(now)
-    final_product_tree_hash = _path_set_hash(
-        Path(identity["repo_path"]), task["deliverable_paths"]
+    corrected_progress_contract = task.get("schema_version") == TASK_SCHEMA
+    primary_mode = (
+        task["primary_mode"]
+        if corrected_progress_contract
+        else "legacy_unclassified"
+    )
+    product_paths = (
+        task["product_evidence_paths"]
+        if corrected_progress_contract
+        else task["deliverable_paths"]
+    )
+    final_product_tree_hash = (
+        _path_set_hash(Path(identity["repo_path"]), product_paths)
+        if product_paths
+        else None
     )
     baseline_product_tree_hash = task.get("baseline_product_tree_hash")
+    baseline_deliverable_tree_hash = task.get("baseline_deliverable_tree_hash")
+    final_deliverable_tree_hash = _path_set_hash(
+        Path(identity["repo_path"]), task["deliverable_paths"]
+    )
+    product_tree_changed = (
+        isinstance(baseline_product_tree_hash, str)
+        and baseline_product_tree_hash != final_product_tree_hash
+    )
+    deliverable_tree_changed = (
+        isinstance(baseline_deliverable_tree_hash, str)
+        and baseline_deliverable_tree_hash != final_deliverable_tree_hash
+    )
+    mode_evidence = all_passed and (
+        deliverable_tree_changed
+        if corrected_progress_contract
+        else product_tree_changed
+    )
+    if not corrected_progress_contract:
+        status = "verification_passed" if all_passed else "verification_failed"
+        reason = "legacy_acceptance_passed" if all_passed else "acceptance_failed"
+        product_evidence = product_tree_changed
+    elif not all_passed:
+        status = "verification_failed"
+        reason = "acceptance_failed"
+        product_evidence = False
+    elif primary_mode == "product" and not (mode_evidence and product_tree_changed):
+        status = "verification_failed"
+        reason = "product_evidence_missing"
+        product_evidence = False
+    elif primary_mode == "product":
+        status = "verification_passed"
+        reason = "product_evidence_closed"
+        product_evidence = True
+    elif mode_evidence:
+        status = "verification_passed"
+        reason = "non_product_mode_verification_closed"
+        product_evidence = False
+    else:
+        status = "verification_failed"
+        reason = "non_product_mode_evidence_missing"
+        product_evidence = False
     receipt = {
         "schema_version": "development-governor-verification-receipt.v0",
         "project_id": identity["project_id"],
@@ -1030,31 +1156,58 @@ def verify_task(repo_path: Path, *, state_root: Path = DEFAULT_STATE_ROOT, now=N
         "task_hash": decision["task_hash"],
         "lease_id": decision["lease_id"],
         "verified_at": timestamp,
-        "status": "verification_passed" if all_passed else "verification_failed",
-        "product_evidence": (
-            isinstance(baseline_product_tree_hash, str)
-            and baseline_product_tree_hash != final_product_tree_hash
-        ),
+        "status": status,
+        "product_evidence": product_evidence,
         "repository": {
             "path": identity["repo_path"],
-            "product_paths": list(task["deliverable_paths"]),
+            "product_paths": list(product_paths),
             "baseline_product_tree_hash": baseline_product_tree_hash,
             "final_product_tree_hash": final_product_tree_hash,
         },
         "results": results,
     }
+    if corrected_progress_contract:
+        receipt.update(
+            {
+                "schema_version": "development-governor-verification-receipt.v1",
+                "reason": reason,
+                "primary_mode": primary_mode,
+                "capability_transition": task["capability_transition"],
+                "mode_evidence": mode_evidence,
+                "repository": {
+                    "path": identity["repo_path"],
+                    "deliverable_paths": list(task["deliverable_paths"]),
+                    "product_paths": list(product_paths),
+                    "baseline_deliverable_tree_hash": (
+                        baseline_deliverable_tree_hash
+                    ),
+                    "final_deliverable_tree_hash": final_deliverable_tree_hash,
+                    "baseline_product_tree_hash": baseline_product_tree_hash,
+                    "final_product_tree_hash": final_product_tree_hash,
+                },
+            }
+        )
     receipt_path = task_dir / "verifications" / (f"{int(timestamp * 1000000)}.json")
     state = _load_task_state(task_dir, decision["task_hash"])
     state["status"] = receipt["status"]
     state["verification_receipt"] = str(receipt_path)
     _atomic_json(receipt_path, receipt)
     _atomic_json(task_dir / "state.json", state)
-    return {
+    result_payload = {
         "status": receipt["status"],
+        "product_evidence": receipt["product_evidence"],
         "task_hash": decision["task_hash"],
         "receipt_path": str(receipt_path),
         "results": results,
     }
+    if corrected_progress_contract:
+        result_payload.update(
+            {
+                "reason": receipt["reason"],
+                "mode_evidence": receipt["mode_evidence"],
+            }
+        )
+    return result_payload
 
 
 def close_task(

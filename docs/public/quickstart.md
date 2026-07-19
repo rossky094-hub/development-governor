@@ -42,12 +42,19 @@ hash, unchanged policy, or active lease fails closed and no policy is replaced.
 ## 3. Freeze one bounded slice
 
 Copy `examples/task-capsule.example.json` outside the project. State one observable
-result, only its constraints and evidence inputs, exact deliverable paths, existing
-acceptance IDs, and smaller or equal limits. Every evidence input is an immutable file
-record with its current lowercase SHA-256. Represent a directory with a separately
-hash-bound manifest file; do not submit a mutable directory path as evidence. Evidence
-inputs and deliverable paths must be path-disjoint, including directory ancestors. A
-file expected to change belongs only in `deliverable_paths`, never in `evidence_inputs`.
+result, exactly one primary mode, and exact deliverable paths. A `product` task must
+also bind one capability transition (`capability_id`, `from_state`, `to_state`) and a
+non-empty `product_evidence_paths` subset. Support files such as specs and review
+receipts may remain in `deliverable_paths`; do not list them as product evidence unless
+they are themselves the accepted product capability. `research` and `governance`
+tasks use `capability_transition: null` and an empty product-evidence path list.
+
+Also bind only the task's constraints and evidence inputs, existing acceptance IDs,
+and smaller or equal limits. Every evidence input is an immutable file record with its
+current lowercase SHA-256. Represent a directory with a separately hash-bound manifest
+file; do not submit a mutable directory path as evidence. Evidence inputs and
+deliverable paths must be path-disjoint, including directory ancestors. A file expected
+to change belongs only in `deliverable_paths`, never in `evidence_inputs`.
 
 For a serial slice use `lanes: []` and set both agent limits to 1. For parallel work,
 declare at least two lanes; every lane must own disjoint deliverable paths and disjoint
@@ -78,8 +85,13 @@ governor close --repo /absolute/path/to/your-project
 
 `verify` rechecks protected file and evidence hashes, creates a fresh disposable
 repository snapshot for each pre-enrolled argv, and runs it without a shell. Snapshot
-changes are never copied back. `close` succeeds only after verification passes. If the
-Owner intentionally stops a failed slice, use an explicit reason:
+changes are never copied back. For a product task, passing acceptance is necessary but
+not sufficient: at least one declared product-evidence path must also change. A
+spec-only or review-only change therefore returns `product_evidence_missing` and cannot
+close as product progress. Non-product tasks record `mode_evidence=true` and
+`product_evidence=false`. `close` succeeds only after the applicable verification and
+evidence check passes. If the Owner intentionally stops a failed slice, use an explicit
+reason:
 
 ```bash
 governor close --repo /absolute/path/to/your-project \

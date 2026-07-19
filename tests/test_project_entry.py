@@ -14,6 +14,7 @@ from development_governor.project_entry import (
     canonical_project_identity,
     close_task,
     enroll_project,
+    load_prepared_task,
     prepare_task,
     project_status,
     start_task,
@@ -102,16 +103,23 @@ class ProjectEntryTests(unittest.TestCase):
 
     def capsule(self, **overrides):
         raw = {
-            "schema_version": "development-governor-task-capsule.v1",
+            "schema_version": "development-governor-task-capsule.v2",
             "repo_path": str(self.repo),
             "owner_request_ref": "codex:user-turn/test-task",
             "result": "Deliver one working product slice",
+            "primary_mode": "product",
+            "capability_transition": {
+                "capability_id": "example-runtime",
+                "from_state": "baseline",
+                "to_state": "feature_available",
+            },
             "constraints": ["Do not edit acceptance files"],
             "evidence_inputs": [
                 {"path": "README.md", "sha256": self.digest("README.md")},
             ],
             "acceptance_ids": ["verify"],
             "deliverable_paths": ["src/"],
+            "product_evidence_paths": ["src/"],
             "limits": {
                 "max_attempts": 2,
                 "max_review_waves": 0,
@@ -123,6 +131,8 @@ class ProjectEntryTests(unittest.TestCase):
             "lanes": [],
         }
         raw.update(overrides)
+        if "deliverable_paths" in overrides and "product_evidence_paths" not in overrides:
+            raw["product_evidence_paths"] = list(raw["deliverable_paths"])
         return raw
 
     @staticmethod
@@ -258,7 +268,7 @@ class ProjectEntryTests(unittest.TestCase):
     def test_evidence_content_hash_is_bound_and_rechecked_before_start(self):
         self.enroll()
         raw = self.capsule(
-            schema_version="development-governor-task-capsule.v1",
+            schema_version="development-governor-task-capsule.v2",
             evidence_inputs=[
                 {"path": "README.md", "sha256": self.digest("README.md")}
             ],
@@ -369,6 +379,7 @@ class ProjectEntryTests(unittest.TestCase):
         started = start_task(prepared["task_path"], state_root=self.state_root, now=100.0)
         repeated = start_task(prepared["task_hash"], state_root=self.state_root, now=101.0)
         active = authorize_mutation(self.repo, state_root=self.state_root, now=102.0)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
         verified = verify_task(self.repo, state_root=self.state_root, now=103.0)
         closed = close_task(self.repo, state_root=self.state_root, now=104.0)
         after = authorize_mutation(self.repo, state_root=self.state_root, now=105.0)
@@ -429,6 +440,8 @@ class ProjectEntryTests(unittest.TestCase):
         original = (self.repo / "src" / "app.py").read_bytes()
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+        original = (self.repo / "src" / "app.py").read_bytes()
 
         result = verify_task(self.repo, state_root=self.state_root, now=101.0)
 
@@ -462,6 +475,72 @@ class ProjectEntryTests(unittest.TestCase):
         )
         self.assertTrue(receipt["product_evidence"])
 
+    def test_product_task_cannot_close_when_only_non_product_deliverable_changes(self):
+        self.enroll()
+        capsule = self.capsule(
+            schema_version="development-governor-task-capsule.v2",
+            primary_mode="product",
+            capability_transition={
+                "capability_id": "example-runtime",
+                "from_state": "baseline",
+                "to_state": "feature_available",
+            },
+            evidence_inputs=[
+                {
+                    "path": "acceptance/verify.py",
+                    "sha256": self.digest("acceptance/verify.py"),
+                }
+            ],
+            deliverable_paths=["src/", "README.md"],
+            product_evidence_paths=["src/"],
+        )
+        capsule_path = self.root / "product-capsule-v2.json"
+        self.write_json(capsule_path, capsule)
+        try:
+            prepared = prepare_task(capsule_path, state_root=self.state_root)
+        except ProjectEntryError as error:
+            self.fail(f"v2 product capsule should be supported: {error}")
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        (self.repo / "README.md").write_text("spec-only change\n", encoding="utf-8")
+
+        result = verify_task(self.repo, state_root=self.state_root, now=101.0)
+
+        self.assertEqual(result["status"], "verification_failed")
+        self.assertEqual(result["reason"], "product_evidence_missing")
+        self.assertFalse(result["product_evidence"])
+        with self.assertRaisesRegex(ProjectEntryError, "verification has not passed"):
+            close_task(self.repo, state_root=self.state_root, now=102.0)
+
+    def test_governance_task_records_mode_evidence_without_product_evidence(self):
+        prepared = self.prepare(
+            result="Freeze one bounded governance artifact",
+            primary_mode="governance",
+            capability_transition=None,
+            evidence_inputs=[
+                {
+                    "path": "acceptance/verify.py",
+                    "sha256": self.digest("acceptance/verify.py"),
+                }
+            ],
+            deliverable_paths=["README.md"],
+            product_evidence_paths=[],
+        )
+        start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        (self.repo / "README.md").write_text(
+            "bounded governance evidence\n", encoding="utf-8"
+        )
+
+        result = verify_task(self.repo, state_root=self.state_root, now=101.0)
+
+        self.assertEqual(result["status"], "verification_passed")
+        self.assertEqual(result["reason"], "non_product_mode_verification_closed")
+        self.assertTrue(result.get("mode_evidence"), result)
+        self.assertFalse(result["product_evidence"])
+        self.assertEqual(
+            close_task(self.repo, state_root=self.state_root, now=102.0)["status"],
+            "closed",
+        )
+
     def test_unverified_task_requires_explicit_owner_abort_to_close(self):
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
@@ -486,9 +565,70 @@ class ProjectEntryTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectEntryError, "outside Governor external state"):
             start_task(str(forged_task), state_root=self.state_root, now=100.0)
 
+    def test_load_accepts_stored_v1_task_but_rejects_unknown_stored_schema(self):
+        prepared = self.prepare()
+        current = json.loads(Path(prepared["task_path"]).read_text(encoding="utf-8"))
+        legacy = dict(current)
+        legacy["schema_version"] = "development-governor-task-capsule.v1"
+        for field in (
+            "primary_mode",
+            "capability_transition",
+            "product_evidence_paths",
+            "baseline_deliverable_tree_hash",
+        ):
+            legacy.pop(field)
+
+        def store(payload):
+            encoded = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            task_hash = hashlib.sha256(encoded).hexdigest()
+            path = (
+                self.state_root
+                / "projects"
+                / payload["project_identity"]["project_id"]
+                / "tasks"
+                / task_hash
+                / "task.json"
+            )
+            path.parent.mkdir(parents=True)
+            self.write_json(path, payload)
+            return task_hash
+
+        legacy_hash = store(legacy)
+        self.assertEqual(
+            load_prepared_task(legacy_hash, state_root=self.state_root)[
+                "schema_version"
+            ],
+            "development-governor-task-capsule.v1",
+        )
+        start_task(legacy_hash, state_root=self.state_root, now=100.0)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+        legacy_result = verify_task(
+            self.repo, state_root=self.state_root, now=101.0
+        )
+        legacy_receipt = json.loads(
+            Path(legacy_result["receipt_path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            legacy_receipt["schema_version"],
+            "development-governor-verification-receipt.v0",
+        )
+        self.assertNotIn("primary_mode", legacy_receipt)
+
+        unknown = dict(legacy)
+        unknown["schema_version"] = "development-governor-task-capsule.v999"
+        unknown_hash = store(unknown)
+        with self.assertRaisesRegex(ProjectEntryError, "unsupported stored task schema"):
+            load_prepared_task(unknown_hash, state_root=self.state_root)
+
     def test_verified_closed_task_is_terminal_and_cannot_restart(self):
         prepared = self.prepare()
         start_task(prepared["task_hash"], state_root=self.state_root, now=100.0)
+        (self.repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
         verify_task(self.repo, state_root=self.state_root, now=101.0)
         close_task(self.repo, state_root=self.state_root, now=102.0)
 
